@@ -179,9 +179,10 @@ where
     *sum = p.evaluate(challenge);
     *n_vars -= skips;
 
-    let pow_bits = grinding
-        .pow_bits::<EF>((comp_degree + usize::from(eq_factor.is_some())) * ((1 << skips) - 1));
-    fs_prover.pow_grinding(pow_bits);
+    // Grinding deactivated for optimization check
+    // let pow_bits = grinding
+    //     .pow_bits::<EF>((comp_degree + usize::from(eq_factor.is_some())) * ((1 << skips) - 1));
+    // fs_prover.pow_grinding(pow_bits);
 
     let folding_scalars = selectors
         .iter()

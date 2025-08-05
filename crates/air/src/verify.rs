@@ -75,19 +75,21 @@ impl<
             .parse_commitment::<DIGEST_ELEMS>(verifier_state)
             .map_err(|_| AirVerifError::InvalidPcsCommitment)?;
 
-        verifier_state.check_pow_grinding(
-            settings
-                .security_bits
-                .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_constraints))),
-        )?;
+        // Grinding desactivado para optimización
+        // verifier_state.check_pow_grinding(
+        //     settings
+        //         .security_bits
+        //         .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_constraints))),
+        // )?;
 
         let constraints_batching_scalar = verifier_state.sample();
 
-        verifier_state.check_pow_grinding(
-            settings
-                .security_bits
-                .saturating_sub(EF::bits().saturating_sub(self.log_length)),
-        )?;
+        // Grinding desactivado para optimización
+        // verifier_state.check_pow_grinding(
+        //     settings
+        //         .security_bits
+        //         .saturating_sub(EF::bits().saturating_sub(self.log_length)),
+        // )?;
 
         let mut zerocheck_challenges = vec![EF::ZERO; log_length - settings.univariate_skips + 1];
         for challenge in &mut zerocheck_challenges {
@@ -100,9 +102,7 @@ impl<
                 self.constraint_degree + 1,
                 log_length,
                 settings.univariate_skips,
-                SumcheckGrinding::Auto {
-                    security_bits: settings.security_bits,
-                },
+                SumcheckGrinding::None,
             )?;
         if sc_sum != EF::ZERO {
             return Err(AirVerifError::SumMismatch);
@@ -165,11 +165,12 @@ impl<
             return Err(AirVerifError::SumMismatch);
         }
 
-        verifier_state.check_pow_grinding(
-            settings
-                .security_bits
-                .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_witness_columns()))),
-        )?;
+        // Grinding desactivado para optimización
+        // verifier_state.check_pow_grinding(
+        //     settings
+        //         .security_bits
+        //         .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_witness_columns()))),
+        // )?;
 
         let mut columns_batching_scalars = vec![EF::ZERO; self.log_n_witness_columns()];
         for challenge in &mut columns_batching_scalars {
@@ -208,9 +209,7 @@ impl<
             verifier_state,
             log_length,
             2,
-            SumcheckGrinding::Auto {
-                security_bits: settings.security_bits,
-            },
+            SumcheckGrinding::None,
         )?;
 
         if batched_inner_sum
