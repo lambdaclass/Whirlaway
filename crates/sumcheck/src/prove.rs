@@ -218,7 +218,6 @@ where
     );
     let n_vars = pols[0].num_variables();
     if TypeId::of::<NF>() == TypeId::of::<F>() {
-        println!("ENTRA AL NF = F");
         let pols: &[EvaluationsList<F>] = unsafe { std::mem::transmute(pols) };
         let packed_pols = pols
             .iter()
@@ -253,7 +252,6 @@ where
             })
             .sum()
     } else {
-        println!("SIN PACKING");
         // TODO packing everywhere
         assert_eq!(TypeId::of::<NF>(), TypeId::of::<EF>());
         (0..1 << n_vars)
