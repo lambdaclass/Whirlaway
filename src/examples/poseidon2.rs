@@ -81,7 +81,9 @@ impl fmt::Display for Poseidon2Benchmark {
         writeln!(f, "Verification: {} ms", self.verifier_time.as_millis())
     }
 }
-
+// Traza: 165 columnas, 1 fila por cada hash que se quiere probar.
+// Nro de constraints: 148
+// Degree de las constraints: 3
 pub fn prove_poseidon2(
     log_n_rows: usize,
     settings: AirSettings,

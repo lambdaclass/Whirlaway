@@ -145,3 +145,7 @@ tracing-forest.workspace = true
 tracing-subscriber.workspace = true
 whir-p3.workspace = true
 p3-uni-stark.workspace = true
+
+[profile.profiling]
+inherits = "release"
+debug = true

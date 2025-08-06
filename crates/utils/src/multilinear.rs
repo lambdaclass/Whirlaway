@@ -27,11 +27,14 @@ pub fn fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
         (0..new_size)
             .into_par_iter()
             .map(|i| {
+                // scalars: [1, 0]
+                // j = 0, s = 1
+                // j = 1, s = 0
                 scalars
                     .iter()
                     .enumerate()
                     .map(|(j, s)| m.evals()[i + j * new_size] * *s)
-                    .sum()
+                    .sum() // m(i)
             })
             .collect(),
     )
@@ -79,6 +82,7 @@ pub fn fold_multilinear_in_large_field<F: Field, EF: ExtensionField<F>>(
 ) -> EvaluationsList<EF> {
     assert!(scalars.len().is_power_of_two() && scalars.len() <= m.num_evals());
     let new_size = m.num_evals() / scalars.len();
+
     EvaluationsList::new(
         (0..new_size)
             .into_par_iter()
@@ -128,6 +132,7 @@ pub fn batch_fold_multilinear_in_large_field<F: Field, EF: ExtensionField<F>>(
 }
 
 pub fn batch_fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
+    // c-up y c-down
     polys: &[&EvaluationsList<EF>],
     scalars: &[F],
 ) -> Vec<EvaluationsList<EF>> {
