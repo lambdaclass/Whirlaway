@@ -161,6 +161,7 @@ where
             // Si skip es 1, estos folded son los c^up y c^down, pero con una variable menos (la mitad de las evaluaciones, en evaluationList).
             // Después compute_over_hypercube las evalua en el hipercubo de tamaño la mitad.
             // PREGUNTA: Qué pasa con la otra mitad?
+            // RESPUESTA: No es que se calcula una mitad y despues la otra mitad.
             let folded = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars);
             let mut sum_z =
                 compute_over_hypercube(&folded, computation, batching_scalars, eq_mle.as_ref());
