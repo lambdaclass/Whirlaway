@@ -37,7 +37,7 @@ fn generate_ef_scalars(skips: usize, challenge: EF) -> Vec<EF> {
 
 fn first_round_skip_4_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("first_round_skip_4");
-    group.sample_size(20);
+    group.sample_size(100);
 
     let size = 1 << 16; // 2^16 evaluations
     let m = EvaluationsList::new((0..size).map(|i| F::from_usize(i)).collect::<Vec<_>>());
@@ -89,7 +89,7 @@ fn first_round_skip_4_benchmark(c: &mut Criterion) {
 
 fn subsequent_rounds_skip_1_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("subsequent_rounds_skip_1");
-    group.sample_size(20);
+    group.sample_size(100);
 
     let size = 1 << 16; // 2^16 evaluations
     let m = EvaluationsList::new((0..size).map(|i| F::from_usize(i)).collect::<Vec<_>>());
@@ -145,7 +145,7 @@ fn subsequent_rounds_skip_1_benchmark(c: &mut Criterion) {
 
 fn batch_fold_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_fold");
-    group.sample_size(20);
+    group.sample_size(100);
 
     let size = 1 << 16; // 2^16 evaluations
     let num_polys = 4;
@@ -257,6 +257,6 @@ criterion_group!(
     benches,
     first_round_skip_4_benchmark,
     subsequent_rounds_skip_1_benchmark,
-    batch_fold_benchmark,
+    //batch_fold_benchmark,
 );
 criterion_main!(benches);

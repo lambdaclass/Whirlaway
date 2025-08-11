@@ -47,8 +47,8 @@ pub fn fold_multilinear_in_small_field_no_skip<F: Field, EF: ExtensionField<F>>(
 
     EvaluationsList::new(
         first_half
-            .iter()
-            .zip(second_half.iter())
+            .par_iter()
+            .zip(second_half.par_iter())
             .map(|(&a, &b)| a * scalars[0] + b * scalars[1])
             .collect(),
     )
@@ -139,26 +139,43 @@ pub fn fold_multilinear_in_large_field<F: Field, EF: ExtensionField<F>>(
             .collect(),
     )
 }
-
+// function optimized with the help of Gemini
 pub fn fold_multilinear_in_large_field_new<F: Field, EF: ExtensionField<F>>(
     m: &EvaluationsList<F>,
     scalars: &[EF],
 ) -> EvaluationsList<EF> {
     assert!(scalars.len().is_power_of_two() && scalars.len() <= m.num_evals());
     let new_size = m.num_evals() / scalars.len();
-    // Cache-friendly accumulation: dst += scalar[j] * chunk_j
-    // where chunk_j = m.evals()[j * new_size .. (j + 1) * new_size]
     let mut dst = EF::zero_vec(new_size);
 
-    let mut chunks = m.evals().chunks_exact(new_size);
-    // Since new_size * scalars.len() == m.num_evals(), remainder is empty
-    for (scalar, chunk) in scalars.iter().copied().zip(&mut chunks) {
-        dst.par_iter_mut()
-            .zip(chunk.par_iter().copied())
-            .for_each(|(d, v)| {
-                *d += scalar * v;
-            });
-    }
+    // 1. Get slice views of the input chunks. This is cheap; no data is copied.
+    let input_chunks: Vec<&[F]> = m.evals().chunks_exact(new_size).collect();
+
+    // 2. Parallelize over the output buffer `dst` by splitting it into mutable chunks.
+    // Rayon ensures each thread gets an exclusive `dst_chunk`.
+    // The chunk size (e.g., 1024) is tunable; this value generally works well.
+    dst.par_chunks_mut(1024)
+        .enumerate()
+        .for_each(|(chunk_index, dst_chunk)| {
+            // `chunk_index` is the chunk index (0, 1, 2, ...).
+            // `dst_chunk` is the per-thread exclusive mutable slice (e.g., &mut dst[0..1024]).
+
+            let start_idx_global = chunk_index * 1024;
+
+            // 3. Within the worker, iterate over all scalars.
+            // This mirrors the cache-friendly logic of the `_new` variant.
+            for (scalar_idx, scalar) in scalars.iter().enumerate() {
+                let input_chunk = input_chunks[scalar_idx];
+
+                // 4. Accumulate into the local `dst` chunk.
+                // Both reads (`input_chunk`) and writes (`dst_chunk`) are sequential
+                // within this loop, which is cache-friendly.
+                for i in 0..dst_chunk.len() {
+                    let global_i = start_idx_global + i;
+                    dst_chunk[i] += *scalar * input_chunk[global_i];
+                }
+            }
+        });
 
     EvaluationsList::new(dst)
 }
@@ -173,8 +190,8 @@ pub fn fold_multilinear_in_large_field_no_skip<F: Field, EF: ExtensionField<F>>(
 
     EvaluationsList::new(
         first_half
-            .iter()
-            .zip(second_half.iter())
+            .par_iter()
+            .zip(second_half.par_iter())
             .map(|(&a, &b)| scalars[0] * a + scalars[1] * b)
             .collect(),
     )
