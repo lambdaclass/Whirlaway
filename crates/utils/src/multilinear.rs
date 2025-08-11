@@ -214,6 +214,16 @@ pub fn batch_fold_multilinear_in_large_field<F: Field, EF: ExtensionField<F>>(
         .collect()
 }
 
+pub fn batch_fold_multilinear_in_large_field_no_skip<F: Field, EF: ExtensionField<F>>(
+    polys: &[&EvaluationsList<F>],
+    scalars: &[EF],
+) -> Vec<EvaluationsList<EF>> {
+    polys
+        .par_iter()
+        .map(|poly| fold_multilinear_in_large_field_no_skip(poly, scalars))
+        .collect()
+}
+
 pub fn batch_fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
     polys: &[&EvaluationsList<EF>],
     scalars: &[F],
@@ -221,6 +231,16 @@ pub fn batch_fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
     polys
         .par_iter()
         .map(|poly| fold_multilinear_in_small_field(poly, scalars))
+        .collect()
+}
+
+pub fn batch_fold_multilinear_in_small_field_no_skip<F: Field, EF: ExtensionField<F>>(
+    polys: &[&EvaluationsList<EF>],
+    scalars: &[F],
+) -> Vec<EvaluationsList<EF>> {
+    polys
+        .par_iter()
+        .map(|poly| fold_multilinear_in_small_field_no_skip(poly, scalars))
         .collect()
 }
 
