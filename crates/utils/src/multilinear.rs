@@ -7,6 +7,8 @@ use rayon::prelude::*;
 use tracing::instrument;
 use whir_p3::poly::evals::EvaluationsList;
 
+// Given a multilinear polynomial `m` it returns the same polynomials with the first variables fixed..
+// This is done "in the small field" because the sacalars are in the base field F.
 pub fn fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
     m: &EvaluationsList<EF>,
     scalars: &[F],
@@ -27,9 +29,8 @@ pub fn fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
         (0..new_size)
             .into_par_iter()
             .map(|i| {
-                // scalars: [1, 0]
-                // j = 0, s = 1
-                // j = 1, s = 0
+                // Example: if skips = 1, then scalars = [1 - z, z].
+                // So, (j, s) is first (0, 1 - z) and then (1, z)
                 scalars
                     .iter()
                     .enumerate()
@@ -132,7 +133,6 @@ pub fn batch_fold_multilinear_in_large_field<F: Field, EF: ExtensionField<F>>(
 }
 
 pub fn batch_fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
-    // c-up y c-down
     polys: &[&EvaluationsList<EF>],
     scalars: &[F],
 ) -> Vec<EvaluationsList<EF>> {

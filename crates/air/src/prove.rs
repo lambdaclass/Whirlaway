@@ -101,7 +101,7 @@ where
 
         self.zerocheck_pow(prover_state, settings).unwrap();
 
-        // r del punto 1, pag 5.
+        // In https://github.com/TomWambsgans/Whirlaway/blob/master/Whirlaway.pdf it is called `r` (page 5).
         let mut zerocheck_challenges = vec![EF::ZERO; log_length + 1 - settings.univariate_skips];
         for challenge in &mut zerocheck_challenges {
             *challenge = prover_state.sample();
@@ -116,7 +116,7 @@ where
             sumcheck::prove(
                 settings.univariate_skips,
                 &columns_up_and_down(&preprocessed_and_witness),
-                &self.air, // constraints H
+                &self.air, // constraints h_i
                 self.constraint_degree,
                 &constraints_batching_scalars,
                 Some(&zerocheck_challenges),

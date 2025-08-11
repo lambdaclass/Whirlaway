@@ -92,18 +92,22 @@ where
     (challenges, folded_multilinears, sum)
 }
 
+// This function applies a sumcheck round, building the round univariate polynomial `p` and returns the
+// multilinear polynomials needed for the next round.
+// For the documentation, we follow the notation in
+// https://github.com/TomWambsgans/Whirlaway/blob/master/Whirlaway.pdf
 #[instrument(name = "sumcheck_round", skip_all, fields(round))]
 #[allow(clippy::too_many_arguments)]
 pub fn sc_round<F, NF, EF, SC, Challenger>(
     skips: usize, // the first round will fold 2^skips (instead of 2 in the basic sumcheck)
-    multilinears: &[&EvaluationsList<NF>], // c^up y c^down por cada columna c.
+    multilinears: &[&EvaluationsList<NF>], // `c^up` and `c^down` for each column c.
     n_vars: &mut usize,
-    computation: &SC,         //constraints H
-    eq_factor: Option<&[EF]>, // [r1,...,rn]
+    computation: &SC,         // In the zerocheck: constraints `h_i`.
+    eq_factor: Option<&[EF]>, // In the zerocheck: the random vector `(r_0, ..., r_{n-1})`.
     batching_scalars: &[EF],
     is_zerofier: bool,
     fs_prover: &mut ProverState<F, EF, Challenger>,
-    comp_degree: usize, // constraint degree. por ejemplo, 3.
+    comp_degree: usize, // Maximum constraint degree. In poseidon2 it's 3.
     sum: &mut EF,
     grinding: SumcheckGrinding,
     challenges: &mut Vec<EF>,
@@ -117,29 +121,38 @@ where
     SC: SumcheckComputation<F, NF, EF> + SumcheckComputationPacked<F, EF>,
     Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
 {
-    // Es el eq(X, r) de whirlaway paper pag 5, punto 2.
+    // The multilinear polynomial `eq(X, r)`.
+    // In round `j` of the sumcheck eq_mle = eq((x_{j+1}, ... ,x_{n-1}), (r_{j+1}, ... , r_{n-1}))
     let eq_mle = eq_factor.map(|eq_factor| EvaluationsList::eval_eq(&eq_factor[1 + round..]));
 
-    // si skip = 1, selectors son dos polinomios: f_1 y f_2
-    // f_1 interpola (0,1) y (1,0)
-    // f_2 interpola (0,0) y (1,1).
-    // si skip es k, selectors son 2^k polinomios.
-    // por ejemplo, k = 2, f_1 interpola (0,1), (1,0), (2,0), (3,0)
+    // `selectors` is a vector of 2^skips univariate polynomials.
+    //
+    // Example: If skips = 1, `selectors` has two polynomials S_0 and S_1.
+    // S_0 is the interpolating polynomial of (0,1) and (1,0). I.e. S_0(x) = 1 - x
+    // S_1 is the interpolating polynomial of (0,0) and (1,1). I.e. S_1(x) = x
+    //
+    // Example: If skips = 2, `selectors` has four polynomials S_0, S_1, S_2, S_3.
+    // S_0 is the interpolating polynomial of (0,1), (1,0), (2,0), (3,0).
+    // S_1 is the interpolating polynomial of (0,0), (1,1), (2,0), (3,0).
+    // S_2 is the interpolating polynomial of (0,0), (1,0), (2,1), (3,0).
+    // S_3 is the interpolating polynomial of (0,0), (1,0), (2,0), (3,1).
     let selectors = univariate_selectors::<F>(skips);
 
+    // `p_evals` will collect the the interpolating points for the sumcheck round polynomial `p`.
     let mut p_evals = Vec::<(F, EF)>::new();
+    // If it's a zerocehck, we start interpolating at the value 2^skips, since we know that in the previous values `p` is zero.
     let start = if is_zerofier {
         p_evals.extend((0..1 << skips).map(|i| (F::from_usize(i), EF::ZERO)));
         1 << skips
     } else {
         0
     };
-    // si comp_degree == 3.
-    // si is_zerofier y skip == 1, z = 2, 3.
-    // si no is_zerofier y skip == 1, z = 0, 1, 2, 3.
-    // Me parece: estamos evaluando g_j(0), g_j(1), g_j(2), g_j(3) pq queremos interpolar y sabemos que g_j es de grado 3.
-    // Per si is_zerofier ya sabemos que g_j(0) = g_j(1) = 0, entonces no necesitamos calcularlos ni pasarselos al verifier.
+
+    // for every value `z` we want to evaluate `p(z)`.
     for z in start..=comp_degree * ((1 << skips) - 1) {
+        // If z == 2^skips - 1, we don't need to do the evaluation, we can deduce p(z) from the previous evaluations.
+        //
+        // Example: If skips = 1, we use that p(0) + p(1) = sum, then p(1) = sum - p(0).
         let sum_z = if z == (1 << skips) - 1 {
             if let Some(eq_factor) = eq_factor {
                 (*sum
@@ -151,20 +164,20 @@ where
                 *sum - p_evals.iter().map(|(_, s)| *s).sum::<EF>()
             }
         } else {
-            // z = 0 -> folding_scalars = [1, 0]
-            // folding_scalars = {s(z): s in selectors}
+            // We evalaute each selector in z.
+            // Example: If skips = 1, folding_scalars has 1 - z and z.
             let folding_scalars = selectors
                 .iter()
                 .map(|s| s.evaluate(F::from_usize(z)))
                 .collect::<Vec<_>>();
             // If skips == 1 (ie classic sumcheck round, we could avoid 1 multiplication below: TODO not urgent)
-            // Si skip es 1, estos folded son los c^up y c^down, pero con una variable menos (la mitad de las evaluaciones, en evaluationList).
-            // Después compute_over_hypercube las evalua en el hipercubo de tamaño la mitad.
-            // PREGUNTA: Qué pasa con la otra mitad?
-            // RESPUESTA: No es que se calcula una mitad y despues la otra mitad.
+            // `folded` has all the polynomials in `multilinears`, but each of them with the first `k` variables fixed, where k = skips.
             let folded = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars);
+            // We sum over the hypercube.
             let mut sum_z =
                 compute_over_hypercube(&folded, computation, batching_scalars, eq_mle.as_ref());
+            // A factor that we don't include in the previous sum and take out as common factor.
+            // `missing_mul_factor` starts being `None`` at round 0.
             if let Some(missing_mul_factor) = missing_mul_factor {
                 sum_z *= *missing_mul_factor;
             }
@@ -181,9 +194,10 @@ where
     if let Some(eq_factor) = &eq_factor {
         // https://eprint.iacr.org/2024/108.pdf Section 3.2
         // We do not take advantage of this trick to send less data, but we could do so in the future (TODO)
-        // Acá está multiplicando el polinomio p por un polinomio h dado por la interpolación de [s(r_j): s in selectors] para j = round.
-        // PREGUNTA: Por qué esta multiplicación si ya había usado eq_mle?
-        // LO ENTENDIMOS: Está sacando de factor común de la sumatoria: zr_i + (1-z)(1-r_i) donde i es la ronda.
+        // We multiply p by a polynomial given by the missing factor.
+        // This polynomial is calculated by interpolating the evaluation of each selector in r_j, where j is the number of round.
+        //
+        // Example: If skips = 1, we interpolate (0, 1 - r_j) and (1, r_j).
         p *= &WhirDensePolynomial::lagrange_interpolation(
             &(0..1 << skips)
                 .into_par_iter()
@@ -193,9 +207,10 @@ where
         .unwrap();
     }
 
-    // Agrega el poly p al transcript y samplea el proximo challenge ara la siguiente ronda.
+    // We add the coefficients of p to the transcript.
     fs_prover.add_extension_scalars(&p.coeffs);
 
+    // We prepare the parameters for the next round.
     let challenge = fs_prover.sample();
     challenges.push(challenge);
     *sum = p.evaluate(challenge);
@@ -205,14 +220,19 @@ where
         .pow_bits::<EF>((comp_degree + usize::from(eq_factor.is_some())) * ((1 << skips) - 1));
     fs_prover.pow_grinding(pow_bits);
 
+    // We evaluate the selectors in the challenge.
     let folding_scalars = selectors
         .iter()
         .map(|s| s.evaluate(challenge))
         .collect::<Vec<_>>();
     if let Some(eq_factor) = eq_factor {
-        // No sé qué es esto de missing_mul_factor.
-        // Creemos que es: (1-s_0)(1-r_0) + s_0 * r_0 para el round 0
-        // [(1-s_1)(1-r_1) + s_1 * r_1] * [(1-s_0)(1-r_0) + s_0 * r_0] para el round 1, etc.
+        // We update the missing_mul_challenge.
+        //
+        // Example: skips = 1, round 0.
+        // `missing_mul_factor` = (1-s_0)(1-r_0) + s_0 * r_0
+        //
+        // Example: skips = 1, round 1.
+        // `missing_mul_factor` = ((1-s_1)(1-r_1) + s_1 * r_1) * ((1-s_0)(1-r_0) + s_0 * r_0])
         *missing_mul_factor = Some(
             selectors
                 .iter()
@@ -222,9 +242,7 @@ where
         );
     }
     // If skips == 1 (ie classic sumcheck round, we could avoid 1 multiplication below: TODO not urgent)
-    // PREGUNTA: Qué está haciendo acá.
-    // RESPUESTA: Acá está calculando los nuevos c^up y c^down que necesta para la siguiente ronda.
-    // O sea, estos c^up y c^down tienen una variable menos y la primera variable está fijada en s_i con i la round.
+    // We calculate the new multilinear polynomials for the next round by fixing the first variables using the folding scalars
     batch_fold_multilinear_in_large_field(multilinears, &folding_scalars)
 }
 
@@ -282,12 +300,13 @@ where
     } else {
         // TODO packing everywhere
         assert_eq!(TypeId::of::<NF>(), TypeId::of::<EF>());
-        // para cada b en el hipercubo n, calcula lo que esta dentro de la sumatoria del punto 2 de la pag 5 y después suma.
+        // For each `b` in the n-hypercube, we calculate the polynomial evaluations and the sum.
         (0..1 << n_vars)
             .into_par_iter()
             .map(|x| {
-                // point = (c_0)^{up} (b), ..., (c_{M-1})^{up} (b), (c_0)^{down} (b), ..., (c_{M-1})^{down} (b)
-                // point tiene largo 2 * M, con M la cantidad de columnas.
+                // Example: In the zerocheck,
+                // point = [(c_0)^{up} (b), ..., (c_{M-1})^{up} (b), (c_0)^{down} (b), ..., (c_{M-1})^{down} (b)]
+                // `point` has 2 * M elements, where M is the number of columns.
                 let point = pols.iter().map(|pol| pol.evals()[x]).collect::<Vec<_>>();
                 let eq_mle_eval = eq_mle.map(|p| p.evals()[x]);
                 eval_sumcheck_computation(computation, batching_scalars, &point, eq_mle_eval)
