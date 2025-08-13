@@ -75,21 +75,19 @@ impl<
             .parse_commitment::<DIGEST_ELEMS>(verifier_state)
             .map_err(|_| AirVerifError::InvalidPcsCommitment)?;
 
-        // Grinding desactivado para optimización
-        // verifier_state.check_pow_grinding(
-        //     settings
-        //         .security_bits
-        //         .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_constraints))),
-        // )?;
+        verifier_state.check_pow_grinding(
+            settings
+                .security_bits
+                .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_constraints))),
+        )?;
 
         let constraints_batching_scalar = verifier_state.sample();
 
-        // Grinding desactivado para optimización
-        // verifier_state.check_pow_grinding(
-        //     settings
-        //         .security_bits
-        //         .saturating_sub(EF::bits().saturating_sub(self.log_length)),
-        // )?;
+        verifier_state.check_pow_grinding(
+            settings
+                .security_bits
+                .saturating_sub(EF::bits().saturating_sub(self.log_length)),
+        )?;
 
         let mut zerocheck_challenges = vec![EF::ZERO; log_length - settings.univariate_skips + 1];
         for challenge in &mut zerocheck_challenges {
@@ -102,7 +100,9 @@ impl<
                 self.constraint_degree + 1,
                 log_length,
                 settings.univariate_skips,
-                SumcheckGrinding::None,
+                SumcheckGrinding::Auto {
+                    security_bits: settings.security_bits,
+                },
             )?;
         if sc_sum != EF::ZERO {
             return Err(AirVerifError::SumMismatch);
@@ -209,7 +209,9 @@ impl<
             verifier_state,
             log_length,
             2,
-            SumcheckGrinding::None,
+            SumcheckGrinding::Auto {
+                security_bits: settings.security_bits,
+            },
         )?;
 
         if batched_inner_sum

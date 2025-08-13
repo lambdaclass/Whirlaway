@@ -123,7 +123,9 @@ where
                 prover_state,
                 EF::ZERO,
                 None,
-                SumcheckGrinding::None,
+                SumcheckGrinding::Auto {
+                    security_bits: settings.security_bits,
+                },
                 None,
             )
         });
@@ -142,11 +144,10 @@ where
         prover_state.add_extension_scalars(&inner_sums_up);
         prover_state.add_extension_scalars(&inner_sums_down);
 
-        // Grinding desactivado para optimización
-        // info_span!("pow grinding").in_scope(|| {
-        //     self.secondary_sumchecks_batching_pow(prover_state, settings)
-        //         .unwrap();
-        // });
+        info_span!("pow grinding").in_scope(|| {
+            self.secondary_sumchecks_batching_pow(prover_state, settings)
+                .unwrap();
+        });
 
         let mut columns_batching_scalars = vec![EF::ZERO; self.log_n_witness_columns()];
         for challenge in &mut columns_batching_scalars {
@@ -200,7 +201,9 @@ where
             prover_state,
             inner_sum,
             None,
-            SumcheckGrinding::None,
+            SumcheckGrinding::Auto {
+                security_bits: settings.security_bits,
+            },
             None,
         );
 

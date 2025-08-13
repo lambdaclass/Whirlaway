@@ -97,9 +97,8 @@ where
         }
         let challenge = verifier_state.sample();
 
-        // Grinding deactivated for optimization check
-        // let pow_bits = grinding.pow_bits::<EF>(deg);
-        // verifier_state.check_pow_grinding(pow_bits)?;
+        let pow_bits = grinding.pow_bits::<EF>(deg);
+        verifier_state.check_pow_grinding(pow_bits)?;
 
         target = pol.evaluate(challenge);
         challenges.push(challenge);

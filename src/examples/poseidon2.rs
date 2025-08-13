@@ -168,8 +168,6 @@ pub fn prove_poseidon2(
         &mut prover_state,
         witness,
     );
-    let proof_size = prover_state.proof_data().len() as f64 * (F::ORDER_U64 as f64).log2() / 8.0;
-
     let prover_time = t.elapsed();
     let time = Instant::now();
 
@@ -187,6 +185,8 @@ pub fn prove_poseidon2(
         .unwrap();
 
     let verifier_time = time.elapsed();
+
+    let proof_size = prover_state.proof_data().len() as f64 * (F::ORDER_U64 as f64).log2() / 8.0;
 
     Poseidon2Benchmark {
         log_n_rows,
