@@ -165,12 +165,11 @@ impl<
             return Err(AirVerifError::SumMismatch);
         }
 
-        // Grinding desactivado para optimización
-        // verifier_state.check_pow_grinding(
-        //     settings
-        //         .security_bits
-        //         .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_witness_columns()))),
-        // )?;
+        verifier_state.check_pow_grinding(
+            settings
+                .security_bits
+                .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_witness_columns()))),
+        )?;
 
         let mut columns_batching_scalars = vec![EF::ZERO; self.log_n_witness_columns()];
         for challenge in &mut columns_batching_scalars {

@@ -1,7 +1,8 @@
 use ::air::AirSettings;
 use air::table::AirTable;
 use p3_challenger::DuplexChallenger;
-use p3_field::{PrimeField64, extension::BinomialExtensionField};
+use p3_field::PrimeField64;
+use p3_field::extension::BinomialExtensionField;
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear, Poseidon2KoalaBear};
 use p3_matrix::Matrix;
 use p3_poseidon2_air::{Poseidon2Air, RoundConstants, generate_trace_rows};
@@ -183,7 +184,6 @@ pub fn prove_poseidon2(
             log_n_rows,
         )
         .unwrap();
-
     let verifier_time = time.elapsed();
 
     let proof_size = prover_state.proof_data().len() as f64 * (F::ORDER_U64 as f64).log2() / 8.0;
