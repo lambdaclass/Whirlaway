@@ -38,6 +38,7 @@ where
         &max_degree_per_vars,
         sumation_sets,
         grinding,
+        false,
     )
 }
 
@@ -65,6 +66,7 @@ where
         &max_degree_per_vars,
         sumation_sets,
         grinding,
+        true,
     )
 }
 
@@ -72,7 +74,8 @@ fn verify_core<EF, F, Challenger>(
     verifier_state: &mut VerifierState<F, EF, Challenger>,
     max_degree_per_vars: &[usize],
     sumation_sets: Vec<Vec<EF>>,
-    grinding: SumcheckGrinding,
+    _grinding: SumcheckGrinding,
+    first_round_tail_only: bool,
 ) -> Result<(EF, Evaluation<EF>), SumcheckError>
 where
     F: TwoAdicField,
@@ -85,8 +88,35 @@ where
     let (mut sum, mut target) = (EF::ZERO, EF::ZERO);
 
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
-        let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
-        let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
+        // If this is the first round of a univariate-skip zerocheck, the prover
+        // might have sent only the non-zero tail evaluations p(z) for z >= |sumation_set|,
+        // with the prefix evaluations equal to zero. Detect and rebuild accordingly.
+        let expect_eval_tail_only = first_round && first_round_tail_only;
+        let pol = if expect_eval_tail_only {
+            // Reconstruct lagrange interpolation from evaluations where the first
+            // sumation_set.len() points are zeros, and the remaining are provided.
+            // We read exactly (deg + 1 - sumation_set.len()) values: p(z) for z in [len..deg].
+            let zero_prefix = sumation_set.len();
+            let provided = verifier_state.next_extension_scalars_vec(deg + 1 - zero_prefix)?;
+            let evals = (0..zero_prefix)
+                .map(|i| (EF::from_usize(i), EF::ZERO))
+                .chain(
+                    (zero_prefix..=deg)
+                        .zip(provided.into_iter())
+                        .map(|(z, v)| (EF::from_usize(z), v)),
+                )
+                .collect::<Vec<_>>();
+            WhirDensePolynomial::lagrange_interpolation(&evals).unwrap()
+        } else {
+            // General case: the prover now sends evaluations instead of coefficients.
+            // Read deg+1 evaluations at x=0..deg and interpolate.
+            let provided = verifier_state.next_extension_scalars_vec(deg + 1)?;
+            let evals = (0..=deg)
+                .zip(provided.into_iter())
+                .map(|(z, v)| (EF::from_usize(z), v))
+                .collect::<Vec<_>>();
+            WhirDensePolynomial::lagrange_interpolation(&evals).unwrap()
+        };
 
         let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
         if first_round {

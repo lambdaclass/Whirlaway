@@ -173,7 +173,21 @@ where
         .unwrap();
     }
 
-    fs_prover.add_extension_scalars(&p.coeffs);
+    // Optimization: send evaluations instead of coefficients. In zerocheck with skips ≥ 2,
+    // omit the leading zeros. Otherwise, send the full range 0..=deg.
+    let total_degree =
+        comp_degree * ((1 << skips) - 1) + usize::from(eq_factor.is_some()) * ((1 << skips) - 1);
+    if is_zerocheck && (1 << skips) > 2 {
+        let values_to_send = (1 << skips..=total_degree)
+            .map(|z| p.evaluate(EF::from_usize(z)))
+            .collect::<Vec<_>>();
+        fs_prover.add_extension_scalars(&values_to_send);
+    } else {
+        let values_to_send = (0..=total_degree)
+            .map(|z| p.evaluate(EF::from_usize(z)))
+            .collect::<Vec<_>>();
+        fs_prover.add_extension_scalars(&values_to_send);
+    }
 
     let challenge = fs_prover.sample();
     challenges.push(challenge);
@@ -241,7 +255,7 @@ where
         0
     };
 
-    for z in start..=comp_degree {
+    for z in start..=comp_degree + usize::from(eq_factor.is_some()) {
         let sum_z = if z == 1 {
             if let Some(eq_factor) = eq_factor {
                 (*sum - p_evals[0].1 * (EF::ONE - eq_factor[round])) / eq_factor[round]
@@ -271,30 +285,24 @@ where
         p_evals.push((F::from_usize(z), sum_z));
     }
 
-    let mut p = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
+    // Avoid interpolation: transform evaluations in-place if eq_factor is present,
+    // send the evaluations, and evaluate p(challenge) via Lagrange directly.
+    let mut evals_values = p_evals.iter().map(|&(_z, v)| v).collect::<Vec<_>>();
 
     if let Some(eq_factor) = &eq_factor {
-        // https://eprint.iacr.org/2024/108.pdf Section 3.2
-        // We do not take advantage of this trick to send less data, but we could do so in the future (TODO)
-
-        // El polinomio que quiero interpolar es uno lineal por lo que lo busco directamente
-        // El P(x) = y0 + (y1 - y0) * x entonces en nuestro caso y0 = 1 - eq_factor[round]
-        // y y1 = eq_factor[round], al sustituir nos queda algo como
-        // P(x) = (1 - eq_factor[round]) + (eq_factor[round] - (1 - eq_factor[round])) * x
-        // P(x) = (1 - eq_factor[round]) + (eq_factor[round] - 1 + eq_factor[round]) * x
-        // P(x) = (1 - eq_factor[round]) + (2 * eq_factor[round] - 1) * x
-
+        // Multiply pointwise by selector_poly(z) with selector_poly(x) = a + b x
         let a = EF::ONE - eq_factor[round];
         let b = EF::from_usize(2) * eq_factor[round] - EF::ONE;
-        let selector_poly = WhirDensePolynomial::from_coefficients_vec(vec![a, b]);
-        p *= &selector_poly;
+        for (z, v) in evals_values.iter_mut().enumerate() {
+            *v *= a + b * EF::from_usize(z);
+        }
     }
 
-    fs_prover.add_extension_scalars(&p.coeffs);
+    fs_prover.add_extension_scalars(&evals_values);
 
     let challenge = fs_prover.sample();
     challenges.push(challenge);
-    *sum = p.evaluate(challenge);
+    *sum = evaluate_from_equispaced_evals(&evals_values, challenge);
     *n_vars -= 1;
 
     let pow_bits = grinding.pow_bits::<EF>(comp_degree + usize::from(eq_factor.is_some()));
@@ -395,4 +403,27 @@ where
 {
     let res = computation.eval(point, batching_scalars);
     eq_mle_eval.map_or(res, |factor| res * factor)
+}
+
+// Evaluate a degree-<= (evals.len()-1) polynomial at r given its values
+// at integer points x = 0, 1, ..., deg using the Lagrange formula.
+fn evaluate_from_equispaced_evals<EF: Field>(evals: &[EF], r: EF) -> EF {
+    let n = evals.len();
+    let mut acc = EF::ZERO;
+    for i in 0..n {
+        // l_i(r) = prod_{j != i} (r - j) / (i - j)
+        let mut num = EF::ONE;
+        let mut den = EF::ONE;
+        let i_f = EF::from_usize(i);
+        for j in 0..n {
+            if j == i {
+                continue;
+            }
+            let j_f = EF::from_usize(j);
+            num *= r - j_f;
+            den *= i_f - j_f;
+        }
+        acc += evals[i] * (num / den);
+    }
+    acc
 }
