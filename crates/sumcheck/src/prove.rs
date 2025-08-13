@@ -96,6 +96,8 @@ where
 // multilinear polynomials needed for the next round.
 // For the documentation, we follow the notation in
 // https://github.com/TomWambsgans/Whirlaway/blob/master/Whirlaway.pdf
+// We have a detailed description of this function here:
+// https://hackmd.io/OT8ZeaStQX66-Q2ahQkzPQ?view
 #[instrument(name = "sumcheck_round", skip_all, fields(round))]
 #[allow(clippy::too_many_arguments)]
 pub fn sc_round<F, NF, EF, SC, Challenger>(
