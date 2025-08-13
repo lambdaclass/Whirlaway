@@ -96,6 +96,7 @@ impl<
 
         let (sc_sum, outer_sumcheck_challenge) =
             sumcheck::verify_with_univariate_skip::<F, EF, Challenger>(
+                true,
                 verifier_state,
                 self.constraint_degree + 1,
                 log_length,
@@ -104,6 +105,7 @@ impl<
                     security_bits: settings.security_bits,
                 },
             )?;
+
         if sc_sum != EF::ZERO {
             return Err(AirVerifError::SumMismatch);
         }
@@ -213,8 +215,9 @@ impl<
         for challenge in &mut epsilons {
             *challenge = verifier_state.sample();
         }
-
+        println!("llega hasta aca");
         let (batched_inner_sum, inner_sumcheck_challenge) = sumcheck::verify::<F, EF, Challenger>(
+            false,
             verifier_state,
             log_length,
             2,
@@ -223,9 +226,15 @@ impl<
             },
         )?;
 
+        println!("batched_inner_sum: {:?}", batched_inner_sum);
+        println!(
+            "the other: {:?}",
+            EvaluationsList::new(sub_evals.clone()).evaluate(&MultilinearPoint(epsilons.clone()))
+        );
         if batched_inner_sum
             != EvaluationsList::new(sub_evals).evaluate(&MultilinearPoint(epsilons.clone()))
         {
+            println!("Fail line 234");
             return Err(AirVerifError::SumMismatch);
         }
 
