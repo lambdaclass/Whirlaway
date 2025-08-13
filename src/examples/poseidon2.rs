@@ -169,6 +169,8 @@ pub fn prove_poseidon2(
         &mut prover_state,
         witness,
     );
+    // let proof_size = prover_state.narg_string().len();
+
     let prover_time = t.elapsed();
     let time = Instant::now();
 
