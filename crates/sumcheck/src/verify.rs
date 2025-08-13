@@ -108,14 +108,39 @@ where
                 .collect::<Vec<_>>();
             WhirDensePolynomial::lagrange_interpolation(&evals).unwrap()
         } else {
-            // General case: the prover now sends evaluations instead of coefficients.
-            // Read deg+1 evaluations at x=0..deg and interpolate.
-            let provided = verifier_state.next_extension_scalars_vec(deg + 1)?;
-            let evals = (0..=deg)
-                .zip(provided.into_iter())
-                .map(|(z, v)| (EF::from_usize(z), v))
-                .collect::<Vec<_>>();
-            WhirDensePolynomial::lagrange_interpolation(&evals).unwrap()
+            if first_round {
+                // First round without skip: prover sent full coefficients
+                let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
+                WhirDensePolynomial::from_coefficients_vec(coeffs)
+            } else {
+                // Subsequent rounds: prover sends only deg coefficients; reconstruct the last one
+                let coeffs = verifier_state.next_extension_scalars_vec(deg)?;
+                let mut pol = WhirDensePolynomial::from_coefficients_vec(
+                    [coeffs.clone(), vec![EF::ZERO]].concat(),
+                );
+                let computed_sum: EF = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+                // denom = sum_{s in sumation_set} s^deg
+                let mut denom = EF::ZERO;
+                for &s in &sumation_set {
+                    // exponentiation by squaring for EF
+                    let mut base = s;
+                    let mut exp = deg as u64;
+                    let mut acc = EF::ONE;
+                    while exp > 0 {
+                        if exp & 1 == 1 {
+                            acc *= base;
+                        }
+                        base *= base;
+                        exp >>= 1;
+                    }
+                    denom += acc;
+                }
+                // Make sum_{s} p(s) == target from previous round
+                let rhs = target - computed_sum;
+                let c_deg = rhs / denom;
+                pol.coeffs[deg] = c_deg;
+                pol
+            }
         };
 
         let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();

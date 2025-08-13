@@ -173,8 +173,9 @@ where
         .unwrap();
     }
 
-    // Optimization: send evaluations instead of coefficients. In zerocheck with skips ≥ 2,
-    // omit the leading zeros. Otherwise, send the full range 0..=deg.
+    // Encoding:
+    // - Zerocheck with skips ≥ 2: send tail-only evaluations (omit zeros prefix)
+    // - Otherwise (including skips == 1 classic first round): send full coefficients
     let total_degree =
         comp_degree * ((1 << skips) - 1) + usize::from(eq_factor.is_some()) * ((1 << skips) - 1);
     if is_zerocheck && (1 << skips) > 2 {
@@ -183,10 +184,7 @@ where
             .collect::<Vec<_>>();
         fs_prover.add_extension_scalars(&values_to_send);
     } else {
-        let values_to_send = (0..=total_degree)
-            .map(|z| p.evaluate(EF::from_usize(z)))
-            .collect::<Vec<_>>();
-        fs_prover.add_extension_scalars(&values_to_send);
+        fs_prover.add_extension_scalars(&p.coeffs);
     }
 
     let challenge = fs_prover.sample();
@@ -285,24 +283,23 @@ where
         p_evals.push((F::from_usize(z), sum_z));
     }
 
-    // Avoid interpolation: transform evaluations in-place if eq_factor is present,
-    // send the evaluations, and evaluate p(challenge) via Lagrange directly.
-    let mut evals_values = p_evals.iter().map(|&(_z, v)| v).collect::<Vec<_>>();
+    // Build polynomial and send only deg coefficients (omit leading one)
+    let mut p = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
 
     if let Some(eq_factor) = &eq_factor {
-        // Multiply pointwise by selector_poly(z) with selector_poly(x) = a + b x
+        // Multiply by selector poly: a + b x
         let a = EF::ONE - eq_factor[round];
         let b = EF::from_usize(2) * eq_factor[round] - EF::ONE;
-        for (z, v) in evals_values.iter_mut().enumerate() {
-            *v *= a + b * EF::from_usize(z);
-        }
+        let selector_poly = WhirDensePolynomial::from_coefficients_vec(vec![a, b]);
+        p *= &selector_poly;
     }
 
-    fs_prover.add_extension_scalars(&evals_values);
+    let deg = comp_degree + usize::from(eq_factor.is_some());
+    fs_prover.add_extension_scalars(&p.coeffs[..deg]);
 
     let challenge = fs_prover.sample();
     challenges.push(challenge);
-    *sum = evaluate_from_equispaced_evals(&evals_values, challenge);
+    *sum = p.evaluate(challenge);
     *n_vars -= 1;
 
     let pow_bits = grinding.pow_bits::<EF>(comp_degree + usize::from(eq_factor.is_some()));
@@ -407,23 +404,4 @@ where
 
 // Evaluate a degree-<= (evals.len()-1) polynomial at r given its values
 // at integer points x = 0, 1, ..., deg using the Lagrange formula.
-fn evaluate_from_equispaced_evals<EF: Field>(evals: &[EF], r: EF) -> EF {
-    let n = evals.len();
-    let mut acc = EF::ZERO;
-    for i in 0..n {
-        // l_i(r) = prod_{j != i} (r - j) / (i - j)
-        let mut num = EF::ONE;
-        let mut den = EF::ONE;
-        let i_f = EF::from_usize(i);
-        for j in 0..n {
-            if j == i {
-                continue;
-            }
-            let j_f = EF::from_usize(j);
-            num *= r - j_f;
-            den *= i_f - j_f;
-        }
-        acc += evals[i] * (num / den);
-    }
-    acc
-}
+// removed unused barycentric evaluator
