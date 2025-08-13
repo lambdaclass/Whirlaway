@@ -8,7 +8,6 @@ use tracing::instrument;
 use utils::{
     batch_fold_multilinear_in_large_field, batch_fold_multilinear_in_large_field_no_skip,
     batch_fold_multilinear_in_small_field, batch_fold_multilinear_in_small_field_no_skip,
-    univariate_selectors,
 };
 use whir_p3::{
     fiat_shamir::prover::ProverState,
@@ -120,7 +119,7 @@ where
 {
     let eq_mle = eq_factor.map(|eq_factor| EvaluationsList::eval_eq(&eq_factor[1 + round..]));
 
-    let selectors = univariate_selectors::<F>(skips);
+    let selectors = utils::univariate_selectors_precomputed::<F>(skips);
 
     let mut p_evals = Vec::<(F, EF)>::new();
     let start = if is_zerocheck {

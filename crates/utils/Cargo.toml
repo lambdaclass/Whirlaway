@@ -6,6 +6,11 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+print-selectors = []
+koala-only = []
+
 [dependencies]
 p3-field.workspace = true
 rayon.workspace = true
@@ -13,6 +18,7 @@ p3-air.workspace = true
 p3-matrix.workspace = true
 whir-p3.workspace = true
 tracing.workspace = true
+p3-koala-bear.workspace = true
 
 [dev-dependencies]
 p3-koala-bear.workspace = true
