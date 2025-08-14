@@ -94,17 +94,20 @@ where
     let (mut sum, mut target) = (EF::ZERO, EF::ZERO);
 
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
+        // println!("---ROUND---");
+
         let mut p_evals = Vec::<(F, EF)>::new();
         let mut eq_evals = Vec::<(F, EF)>::new();
 
         if is_zerocheck {
             if first_round {
-                let proof_data = verifier_state.next_extension_scalars_vec(deg)?; // 2 para data_p_evals + 2 para data_eq_evals
-                let data_p_evals = proof_data[..deg - (1 << skips)].to_vec();
-                let data_eq_evals = proof_data[deg - (1 << skips)..].to_vec();
+                let proof_data =
+                    verifier_state.next_extension_scalars_vec(deg + 2 - (1 << skips))?; // 2 para data_p_evals + 2 para data_eq_evals
+                let data_p_evals = proof_data[..(deg + 2 - (1 << skips)) - (1 << skips)].to_vec();
+                let data_eq_evals = proof_data[(deg + 2 - (1 << skips)) - (1 << skips)..].to_vec();
                 p_evals.extend((0..(1 << skips)).map(|i| (F::from_usize(i), EF::ZERO)));
                 p_evals.extend(
-                    ((1 << skips)..=deg)
+                    ((1 << skips)..=(deg + 2 - (1 << skips)))
                         .zip(data_p_evals)
                         .map(|(i, eval)| (F::from_usize(i), eval))
                         .collect::<Vec<_>>(),
@@ -116,9 +119,9 @@ where
                         .collect::<Vec<_>>(),
                 );
             } else {
-                let proof_data = verifier_state.next_extension_scalars_vec(deg + (1 << skips))?;
-                let data_p_evals = proof_data[..deg].to_vec();
-                let data_eq_evals = proof_data[deg..].to_vec();
+                let proof_data = verifier_state.next_extension_scalars_vec(deg + 2)?;
+                let data_p_evals = proof_data[..deg + 2 - (1 << skips)].to_vec();
+                let data_eq_evals = proof_data[deg + 2 - (1 << skips)..].to_vec();
                 p_evals.extend(
                     (0..=deg)
                         .zip(data_p_evals)
@@ -166,6 +169,9 @@ where
         // println!("Polynomial at 1: {pol_1}");
 
         let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+
+        // println!("Computed sum: {computed_sum}");
+        // println!("Target: {target}");
 
         if first_round {
             first_round = false;

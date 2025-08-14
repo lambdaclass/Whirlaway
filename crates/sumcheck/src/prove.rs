@@ -193,7 +193,7 @@ where
         .unwrap();
     }
 
-    //fs_prover.add_extension_scalars(&p.coeffs);
+    // fs_prover.add_extension_scalars(&p.coeffs);
 
     let challenge = fs_prover.sample();
     //println!("Challenge: {challenge}");
