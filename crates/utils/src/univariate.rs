@@ -100,33 +100,6 @@ pub fn barycentric_weights_precomputed<F: Field + 'static>(m: usize) -> Vec<F> {
 /// For a detailed explanation of the formula and its derivation, see:
 /// https://tobydriscoll.net/fnc-julia/globalapprox/barycentric.html
 ///
-/// Helper function to compute prefix and suffix products for Lagrange basis evaluation
-/// Returns (denominators, prefix_products, suffix_products) where:
-/// - denominators[j] = x - j
-/// - prefix_products[k] = ∏_{j < k} (x - j)  with prefix_products[0] = 1
-/// - suffix_products[k] = ∏_{j > k} (x - j)  with suffix_products[m] = 1
-fn compute_lagrange_products<T: Field>(m: usize, x: T) -> (Vec<T>, Vec<T>, Vec<T>) {
-    // Compute denominators d_j = (x - j)
-    let mut denom = vec![T::ZERO; m];
-    for j in 0..m {
-        denom[j] = x - T::from_usize(j);
-    }
-
-    // Prefix products: pref[k] = ∏_{j < k} d_j, with pref[0] = 1
-    let mut pref = vec![T::ONE; m + 1];
-    for k in 0..m {
-        pref[k + 1] = pref[k] * denom[k];
-    }
-
-    // Suffix products: suff[k] = ∏_{j > k} d_j
-    let mut suff = vec![T::ONE; m + 1];
-    for k in (0..m).rev() {
-        suff[k] = suff[k + 1] * denom[k];
-    }
-
-    (denom, pref, suff)
-}
-
 /// Evaluate all Lagrange basis polynomials L_i(x) at point x for grid {0, 1, ..., m-1}
 /// Returns [L_0(x), L_1(x), ..., L_{m-1}(x)]
 ///
@@ -136,25 +109,81 @@ fn compute_lagrange_products<T: Field>(m: usize, x: T) -> (Vec<T>, Vec<T>, Vec<T
 /// - prefix_products[k] = ∏_{j < k} (x - j)  with prefix_products[0] = 1
 /// - suffix_products[k] = ∏_{j > k} (x - j)  with suffix_products[m] = 1
 fn compute_prefix_suffix_products<T: Field>(m: usize, x: T) -> (Vec<T>, Vec<T>) {
-    // Compute denominators d_j = (x - j)
     let denom: Vec<T> = (0..m).map(|j| x - T::from_usize(j)).collect();
 
-    // Prefix products: pref[k] = ∏_{j < k} d_j
     let mut pref = vec![T::ONE; m + 1];
     for k in 0..m {
         pref[k + 1] = pref[k] * denom[k];
     }
 
-    // Suffix products: suff[k] = ∏_{j > k} d_j
     let mut suff = vec![T::ONE; m + 1];
     for k in (0..m).rev() {
         suff[k] = suff[k + 1] * denom[k];
     }
-
     (pref, suff)
 }
 
-/// Evaluate all Lagrange basis polynomials L_i(x) at point x for grid {0, 1, ..., m-1}
+fn evaluate_lagrange_basis_prefix_suffix<F: Field, T: Field>(
+    m: usize,
+    x: T,
+    weights: &[F],
+) -> Vec<T>
+where
+    T: From<F>,
+{
+    let (pref, suff) = compute_prefix_suffix_products(m, x);
+    let mut result = vec![T::ZERO; m];
+    for i in 0..m {
+        let product = pref[i] * suff[i + 1];
+        result[i] = product * T::from(weights[i]);
+    }
+    result
+}
+
+///  Montgomery's Trick Implementation
+
+/// This method uses one field inversion, which can be faster if m is large.
+fn evaluate_lagrange_basis_montgomery<F: Field, T: Field>(m: usize, x: T, weights: &[F]) -> Vec<T>
+where
+    T: From<F>,
+{
+    let denom: Vec<T> = (0..m).map(|j| x - T::from_usize(j)).collect();
+
+    // 1. Compute prefix products: pref[i] = d_0 * ... * d_i
+    let mut pref = vec![T::ONE; m];
+    pref[0] = denom[0];
+    for i in 1..m {
+        pref[i] = pref[i - 1] * denom[i];
+    }
+
+    // 2. Compute the inverse of the total product (one inversion)
+    let mut inv_suffix = pref[m - 1].inverse();
+    let mut result = vec![T::ZERO; m];
+
+    // 3. Iterate backwards to compute each L_i(x)
+    for i in (1..m).rev() {
+        // For index i, we need: pref[i-1] * (d_{i+1} * ... * d_{m-1})
+        // The suffix part is pref[m-1] * (d_0 * ... * d_i)⁻¹ = pref[m-1] * inv_suffix
+        let prefix_part = pref[i - 1];
+        let suffix_part = pref[m - 1] * inv_suffix;
+        let product = prefix_part * suffix_part;
+        result[i] = product * T::from(weights[i]);
+
+        // Update inv_suffix for the next iteration (i-1)
+        // inv_suffix for (i-1) = (d_0 * ... * d_{i-1})⁻¹ = inv_suffix * d_i
+        inv_suffix *= denom[i];
+    }
+
+    // Handle the i=0 case separately
+    // We need d_1 * ... * d_{m-1} = pref[m-1] * d_0⁻¹
+    // At this point, inv_suffix is exactly d_0⁻¹
+    let product_zero = pref[m - 1] * inv_suffix;
+    result[0] = product_zero * T::from(weights[0]);
+
+    result
+}
+
+/// Evaluate all Lagrange basis polynomials L_i(x) at point x in an extension field.
 pub fn evaluate_lagrange_basis_all<F: Field, EF: ExtensionField<F>>(
     m: usize,
     x: EF,
@@ -163,49 +192,38 @@ pub fn evaluate_lagrange_basis_all<F: Field, EF: ExtensionField<F>>(
     if m == 1 {
         return vec![EF::ONE];
     }
-
     if let Some(i) = (0..m).find(|&i| x == EF::from_usize(i)) {
         let mut result = vec![EF::ZERO; m];
         result[i] = EF::ONE;
         return result;
     }
 
-    let (pref, suff) = compute_prefix_suffix_products(m, x);
+    // Method 1: Prefix-Suffix (clearer, more multiplications)
+    //evaluate_lagrange_basis_prefix_suffix(m, x, weights)
 
-    let mut result = vec![EF::ZERO; m];
-    for i in 0..m {
-        // ∏_{j ≠ i} (x - j) = pref[i] * suff[i + 1]
-        let product = pref[i] * suff[i + 1];
-        result[i] = product * weights[i];
-    }
-    result
+    // Method 2: Montgomery's Trick (fewer multiplications, one inversion)
+    evaluate_lagrange_basis_montgomery(m, x, weights)
 }
 
-/// Evaluate all Lagrange basis polynomials L_i(x) at point x in base field F
+/// Evaluate all Lagrange basis polynomials L_i(x) at point x in the base field.
 pub fn evaluate_lagrange_basis_all_base_field<F: Field>(m: usize, x: F, weights: &[F]) -> Vec<F> {
     if m == 1 {
         return vec![F::ONE];
     }
-
     if let Some(i) = (0..m).find(|&i| x == F::from_usize(i)) {
         let mut result = vec![F::ZERO; m];
         result[i] = F::ONE;
         return result;
     }
 
-    let (pref, suff) = compute_prefix_suffix_products(m, x);
+    // Method 1: Prefix-Suffix (clearer, more multiplications)
+    //evaluate_lagrange_basis_prefix_suffix(m, x, weights)
 
-    let mut result = vec![F::ZERO; m];
-    for i in 0..m {
-        // ∏_{j ≠ i} (x - j) = pref[i] * suff[i + 1]
-        let product = pref[i] * suff[i + 1];
-        result[i] = product * weights[i];
-    }
-    result
+    // Method 2: Montgomery's Trick (fewer multiplications, one inversion)
+    evaluate_lagrange_basis_montgomery(m, x, weights)
 }
 
-/// Efficient evaluation of selector polynomials at multiple points
-/// Returns a vector where result[point_idx][selector_idx] = S_{selector_idx}(points[point_idx])
+/// Efficient evaluation of selector polynomials at multiple points in parallel.
 pub fn evaluate_selectors_batch<F: Field, EF: ExtensionField<F>>(
     m: usize,
     points: &[EF],
