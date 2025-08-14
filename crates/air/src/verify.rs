@@ -5,7 +5,9 @@ use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use serde::{Deserialize, Serialize};
 use sumcheck::{SumcheckComputation, SumcheckError, SumcheckGrinding};
 use tracing::instrument;
-use utils::{ConstraintFolder, fold_multilinear_in_large_field, log2_up};
+use utils::{
+    ConstraintFolder, RoundType, evaluate_selectors_batch, fold_multilinear_in_large_field, log2_up,
+};
 use whir_p3::{
     fiat_shamir::{errors::ProofError, verifier::VerifierState},
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
@@ -75,21 +77,19 @@ impl<
             .parse_commitment::<DIGEST_ELEMS>(verifier_state)
             .map_err(|_| AirVerifError::InvalidPcsCommitment)?;
 
-        // Grinding desactivado para optimización
-        // verifier_state.check_pow_grinding(
-        //     settings
-        //         .security_bits
-        //         .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_constraints))),
-        // )?;
+        verifier_state.check_pow_grinding(
+            settings
+                .security_bits
+                .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_constraints))),
+        )?;
 
         let constraints_batching_scalar = verifier_state.sample();
 
-        // Grinding desactivado para optimización
-        // verifier_state.check_pow_grinding(
-        //     settings
-        //         .security_bits
-        //         .saturating_sub(EF::bits().saturating_sub(self.log_length)),
-        // )?;
+        verifier_state.check_pow_grinding(
+            settings
+                .security_bits
+                .saturating_sub(EF::bits().saturating_sub(self.log_length)),
+        )?;
 
         let mut zerocheck_challenges = vec![EF::ZERO; log_length - settings.univariate_skips + 1];
         for challenge in &mut zerocheck_challenges {
@@ -102,7 +102,9 @@ impl<
                 self.constraint_degree + 1,
                 log_length,
                 settings.univariate_skips,
-                SumcheckGrinding::None,
+                SumcheckGrinding::Auto {
+                    security_bits: settings.security_bits,
+                },
             )?;
         if sc_sum != EF::ZERO {
             return Err(AirVerifError::SumMismatch);
@@ -111,27 +113,36 @@ impl<
         let witness_up = verifier_state.next_extension_scalars_vec(self.n_witness_columns())?;
         let witness_down = verifier_state.next_extension_scalars_vec(self.n_witness_columns())?;
 
-        let outer_selector_evals = self
-            .univariate_selectors
-            .iter()
-            .map(|s| s.evaluate(outer_sumcheck_challenge.point[0]))
-            .collect::<Vec<_>>();
+        // Use barycentric evaluation for efficiency
+        let m = 1 << self.univariate_skips;
+        let outer_selector_evals =
+            evaluate_selectors_batch::<F, EF>(m, &[outer_sumcheck_challenge.point[0]])[0].clone();
         let preprocessed_up = self
             .preprocessed_columns
             .iter()
             .map(|c| {
-                fold_multilinear_in_large_field(&column_up(c), &outer_selector_evals).evaluate(
-                    &MultilinearPoint(outer_sumcheck_challenge.point[1..].to_vec()),
+                fold_multilinear_in_large_field(
+                    &column_up(c),
+                    &outer_selector_evals,
+                    RoundType::WithSkips,
                 )
+                .evaluate(&MultilinearPoint(
+                    outer_sumcheck_challenge.point[1..].to_vec(),
+                ))
             })
             .collect::<Vec<_>>();
         let preprocessed_down = self
             .preprocessed_columns
             .iter()
             .map(|c| {
-                fold_multilinear_in_large_field(&column_down(c), &outer_selector_evals).evaluate(
-                    &MultilinearPoint(outer_sumcheck_challenge.point[1..].to_vec()),
+                fold_multilinear_in_large_field(
+                    &column_down(c),
+                    &outer_selector_evals,
+                    RoundType::WithSkips,
                 )
+                .evaluate(&MultilinearPoint(
+                    outer_sumcheck_challenge.point[1..].to_vec(),
+                ))
             })
             .collect::<Vec<_>>();
 
@@ -150,10 +161,10 @@ impl<
                 .collect::<Vec<_>>(),
         );
 
-        let zerocheck_selector_evals = self
-            .univariate_selectors
-            .iter()
-            .map(|s| s.evaluate(zerocheck_challenges[0]));
+        // Use barycentric evaluation for efficiency
+        let zerocheck_selector_evals_vec =
+            evaluate_selectors_batch::<F, EF>(m, &[zerocheck_challenges[0]])[0].clone();
+        let zerocheck_selector_evals = zerocheck_selector_evals_vec.iter().copied();
         if dot_product::<EF, _, _>(
             zerocheck_selector_evals.clone(),
             outer_selector_evals.iter().copied(),
@@ -165,12 +176,11 @@ impl<
             return Err(AirVerifError::SumMismatch);
         }
 
-        // Grinding desactivado para optimización
-        // verifier_state.check_pow_grinding(
-        //     settings
-        //         .security_bits
-        //         .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_witness_columns()))),
-        // )?;
+        verifier_state.check_pow_grinding(
+            settings
+                .security_bits
+                .saturating_sub(EF::bits().saturating_sub(log2_up(self.n_witness_columns()))),
+        )?;
 
         let mut columns_batching_scalars = vec![EF::ZERO; self.log_n_witness_columns()];
         for challenge in &mut columns_batching_scalars {
@@ -209,7 +219,9 @@ impl<
             verifier_state,
             log_length,
             2,
-            SumcheckGrinding::None,
+            SumcheckGrinding::Auto {
+                security_bits: settings.security_bits,
+            },
         )?;
 
         if batched_inner_sum

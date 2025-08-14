@@ -6,8 +6,9 @@ use p3_field::{ExtensionField, Field, TwoAdicField};
 use rayon::prelude::*;
 use tracing::instrument;
 use utils::{
-    batch_fold_multilinear_in_large_field, batch_fold_multilinear_in_large_field_no_skip,
-    batch_fold_multilinear_in_small_field, batch_fold_multilinear_in_small_field_no_skip,
+    RoundType, barycentric_weights_precomputed, batch_fold_multilinear_in_large_field,
+    batch_fold_multilinear_in_small_field, evaluate_lagrange_basis_all_base_field,
+    evaluate_selectors_batch,
 };
 use whir_p3::{
     fiat_shamir::prover::ProverState,
@@ -72,7 +73,6 @@ where
 
     for i in 1..n_rounds {
         folded_multilinears = sc_round_no_skip(
-            //1,
             &folded_multilinears.iter().collect::<Vec<_>>(),
             &mut n_vars,
             computation,
@@ -119,7 +119,9 @@ where
 {
     let eq_mle = eq_factor.map(|eq_factor| EvaluationsList::eval_eq(&eq_factor[1 + round..]));
 
-    let selectors = utils::univariate_selectors_precomputed::<F>(skips);
+    // Use barycentric weights for all selector evaluations
+    let m = 1 << skips;
+    let selector_weights = barycentric_weights_precomputed::<F>(m);
 
     let mut p_evals = Vec::<(F, EF)>::new();
     let start = if is_zerocheck {
@@ -131,21 +133,27 @@ where
     for z in start..=comp_degree * ((1 << skips) - 1) {
         let sum_z = if z == (1 << skips) - 1 {
             if let Some(eq_factor) = eq_factor {
+                // Evaluate all selectors at eq_factor[round] using barycentric method
+                let selector_evals =
+                    evaluate_selectors_batch::<F, EF>(m, &[eq_factor[round]])[0].clone();
                 (*sum
-                    - (0..(1 << skips) - 1)
-                        .map(|i| p_evals[i].1 * selectors[i].evaluate(eq_factor[round]))
+                    - (0..(m - 1))
+                        .map(|i| p_evals[i].1 * selector_evals[i])
                         .sum::<EF>())
-                    / selectors[(1 << skips) - 1].evaluate(eq_factor[round])
+                    / selector_evals[m - 1]
             } else {
                 *sum - p_evals.iter().map(|(_, s)| *s).sum::<EF>()
             }
         } else {
-            let folding_scalars = selectors
-                .iter()
-                .map(|s| s.evaluate(F::from_usize(z)))
-                .collect::<Vec<_>>();
-            // If skips == 1 (ie classic sumcheck round, we could avoid 1 multiplication below: TODO not urgent)
-            let folded = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars);
+            // Evaluate all selectors at z using barycentric method
+            let folding_scalars =
+                evaluate_lagrange_basis_all_base_field(m, F::from_usize(z), &selector_weights);
+            // `RoundType::WithSkips` because we are in the case `skips > 1`.
+            let folded = batch_fold_multilinear_in_small_field(
+                multilinears,
+                &folding_scalars,
+                RoundType::WithSkips,
+            );
             let mut sum_z =
                 compute_over_hypercube(&folded, computation, batching_scalars, eq_mle.as_ref());
             if let Some(missing_mul_factor) = missing_mul_factor {
@@ -163,28 +171,18 @@ where
     if let Some(eq_factor) = &eq_factor {
         // https://eprint.iacr.org/2024/108.pdf Section 3.2
         // We do not take advantage of this trick to send less data, but we could do so in the future (TODO)
+        // Evaluate all selectors at eq_factor[round] using barycentric method
+        let selector_evals = evaluate_selectors_batch::<F, EF>(m, &[eq_factor[round]])[0].clone();
         p *= &WhirDensePolynomial::lagrange_interpolation(
-            &(0..1 << skips)
+            &(0..m)
                 .into_par_iter()
-                .map(|i| (F::from_usize(i), selectors[i].evaluate(eq_factor[round])))
+                .map(|i| (F::from_usize(i), selector_evals[i]))
                 .collect::<Vec<_>>(),
         )
         .unwrap();
     }
 
-    // Encoding:
-    // - Zerocheck with skips ≥ 2: send tail-only evaluations (omit zeros prefix)
-    // - Otherwise (including skips == 1 classic first round): send full coefficients
-    let total_degree =
-        comp_degree * ((1 << skips) - 1) + usize::from(eq_factor.is_some()) * ((1 << skips) - 1);
-    if is_zerocheck && (1 << skips) > 2 {
-        let values_to_send = (1 << skips..=total_degree)
-            .map(|z| p.evaluate(EF::from_usize(z)))
-            .collect::<Vec<_>>();
-        fs_prover.add_extension_scalars(&values_to_send);
-    } else {
-        fs_prover.add_extension_scalars(&p.coeffs);
-    }
+    fs_prover.add_extension_scalars(&p.coeffs);
 
     let challenge = fs_prover.sample();
     challenges.push(challenge);
@@ -195,28 +193,40 @@ where
         .pow_bits::<EF>((comp_degree + usize::from(eq_factor.is_some())) * ((1 << skips) - 1));
     fs_prover.pow_grinding(pow_bits);
 
-    let folding_scalars = selectors
-        .iter()
-        .map(|s| s.evaluate(challenge))
-        .collect::<Vec<_>>();
-    if let Some(eq_factor) = eq_factor {
-        *missing_mul_factor = Some(
-            selectors
-                .iter()
-                .map(|s| s.evaluate(eq_factor[round]) * s.evaluate(challenge))
-                .sum::<EF>()
-                * missing_mul_factor.unwrap_or(EF::ONE),
-        );
+    // Use batch evaluation to avoid redundant selector computations
+    let (folding_scalars, missing_factor_update) = if let Some(eq_factor) = eq_factor {
+        // Evaluate at both points using batch to avoid redundant calculations
+        let points = vec![eq_factor[round], challenge];
+        let batch_results = evaluate_selectors_batch::<F, EF>(1 << skips, &points);
+        let eq_evals = &batch_results[0];
+        let challenge_evals = &batch_results[1];
+
+        let missing_factor = eq_evals
+            .iter()
+            .zip(challenge_evals.iter())
+            .map(|(&eq_val, &challenge_val)| eq_val * challenge_val)
+            .sum::<EF>()
+            * missing_mul_factor.unwrap_or(EF::ONE);
+
+        (challenge_evals.clone(), Some(missing_factor))
+    } else {
+        // Single evaluation when no eq_factor
+        let batch_results = evaluate_selectors_batch::<F, EF>(1 << skips, &[challenge]);
+        (batch_results[0].clone(), None)
+    };
+
+    if let Some(factor) = missing_factor_update {
+        *missing_mul_factor = Some(factor);
     }
 
-    // If skips == 1 (ie classic sumcheck round, we could avoid 1 multiplication below: TODO not urgent)
-    batch_fold_multilinear_in_large_field(multilinears, &folding_scalars)
+    // `RoundType::WithSkips` because we are in the case `skips > 1`.
+    batch_fold_multilinear_in_large_field(multilinears, &folding_scalars, RoundType::WithSkips)
 }
 
+// This function is similar to `sc_round`, but it applies for the case `skips == 1`.
 #[instrument(name = "sumcheck_round", skip_all, fields(round))]
 #[allow(clippy::too_many_arguments)]
 pub fn sc_round_no_skip<F, NF, EF, SC, Challenger>(
-    // skips: usize,
     multilinears: &[&EvaluationsList<NF>],
     n_vars: &mut usize,
     computation: &SC,
@@ -240,9 +250,6 @@ where
 {
     let eq_mle = eq_factor.map(|eq_factor| EvaluationsList::eval_eq(&eq_factor[1 + round..]));
 
-    // S_0(x) = 1 - x
-    // S_1(x) = x
-
     let mut p_evals = Vec::<(F, EF)>::new();
     let start = if is_zerofier {
         p_evals.push((F::ZERO, EF::ZERO));
@@ -252,7 +259,7 @@ where
         0
     };
 
-    for z in start..=comp_degree + usize::from(eq_factor.is_some()) {
+    for z in start..=comp_degree {
         let sum_z = if z == 1 {
             if let Some(eq_factor) = eq_factor {
                 (*sum - p_evals[0].1 * (EF::ONE - eq_factor[round])) / eq_factor[round]
@@ -267,7 +274,12 @@ where
                     .collect()
             } else {
                 let folding_scalars = vec![F::ONE - F::from_usize(z), F::from_usize(z)];
-                batch_fold_multilinear_in_small_field_no_skip(multilinears, &folding_scalars)
+                // `RoundType::WithNoSkips` because we are in the case `skips == 1`.
+                batch_fold_multilinear_in_small_field(
+                    multilinears,
+                    &folding_scalars,
+                    RoundType::WithNoSkips,
+                )
             };
             let mut sum_z =
                 compute_over_hypercube(&folded, computation, batching_scalars, eq_mle.as_ref());
@@ -282,19 +294,21 @@ where
         p_evals.push((F::from_usize(z), sum_z));
     }
 
-    // Build polynomial and send only deg coefficients (omit leading one)
     let mut p = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
 
     if let Some(eq_factor) = &eq_factor {
-        // Multiply by selector poly: a + b x
+        // https://eprint.iacr.org/2024/108.pdf Section 3.2
+        // We do not take advantage of this trick to send less data, but we could do so in the future (TODO)
+
+        // We multiply `p` by the polynomial 1 - r_j + (2 * r_j - 1) * X
+        // This polynomial interpolates the points (0, 1 - r_j) and (1, r_j)
         let a = EF::ONE - eq_factor[round];
         let b = EF::from_usize(2) * eq_factor[round] - EF::ONE;
         let selector_poly = WhirDensePolynomial::from_coefficients_vec(vec![a, b]);
         p *= &selector_poly;
     }
 
-    let deg = comp_degree + usize::from(eq_factor.is_some());
-    fs_prover.add_extension_scalars(&p.coeffs[..deg]);
+    fs_prover.add_extension_scalars(&p.coeffs);
 
     let challenge = fs_prover.sample();
     challenges.push(challenge);
@@ -306,18 +320,19 @@ where
 
     let folding_scalars = vec![EF::ONE - challenge, challenge];
 
-    // Aca se puuede hacer una manipulacion similar a la de arriba cuando interpolamos
-    //  sum = selector[0](eq_factor[round]) * selector[0](challenge) +
-    //       selector[1](eq_factor[round]) * selector[1](challenge)
-    // let sum = (1 - eq_factor[round]) * (1 - challenge) + eq_factor[round] * challenge
+    // We update the `missing_mul_factor`.
+    // Recall taht the selectors are S_0 and S_1 with
+    // S_0(x) = 1 - x
+    // S_1(x) = x
+    // missing_mul_factor = (S_0(r_j) * S_0(s_j) + S_1(r_j) * S_1(s_j)) * missing_mul_factor
     if let Some(eq_factor) = eq_factor {
         *missing_mul_factor = Some(
             ((EF::ONE - eq_factor[round]) * (EF::ONE - challenge) + eq_factor[round] * challenge)
                 * missing_mul_factor.unwrap_or(EF::ONE),
         );
     }
-    // If skips == 1 (ie classic sumcheck round, we could avoid 1 multiplication below: TODO not urgent)
-    batch_fold_multilinear_in_large_field_no_skip(multilinears, &folding_scalars)
+    // `RoundType::WithNoSkips` because we are in the case `skips == 1`.
+    batch_fold_multilinear_in_large_field(multilinears, &folding_scalars, RoundType::WithNoSkips)
 }
 
 fn compute_over_hypercube<F, NF, EF, SC>(
@@ -400,7 +415,3 @@ where
     let res = computation.eval(point, batching_scalars);
     eq_mle_eval.map_or(res, |factor| res * factor)
 }
-
-// Evaluate a degree-<= (evals.len()-1) polynomial at r given its values
-// at integer points x = 0, 1, ..., deg using the Lagrange formula.
-// removed unused barycentric evaluator

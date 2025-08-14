@@ -38,7 +38,6 @@ where
         &max_degree_per_vars,
         sumation_sets,
         grinding,
-        false,
     )
 }
 
@@ -66,7 +65,6 @@ where
         &max_degree_per_vars,
         sumation_sets,
         grinding,
-        true,
     )
 }
 
@@ -74,8 +72,7 @@ fn verify_core<EF, F, Challenger>(
     verifier_state: &mut VerifierState<F, EF, Challenger>,
     max_degree_per_vars: &[usize],
     sumation_sets: Vec<Vec<EF>>,
-    _grinding: SumcheckGrinding,
-    first_round_tail_only: bool,
+    grinding: SumcheckGrinding,
 ) -> Result<(EF, Evaluation<EF>), SumcheckError>
 where
     F: TwoAdicField,
@@ -88,60 +85,8 @@ where
     let (mut sum, mut target) = (EF::ZERO, EF::ZERO);
 
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
-        // If this is the first round of a univariate-skip zerocheck, the prover
-        // might have sent only the non-zero tail evaluations p(z) for z >= |sumation_set|,
-        // with the prefix evaluations equal to zero. Detect and rebuild accordingly.
-        let expect_eval_tail_only = first_round && first_round_tail_only;
-        let pol = if expect_eval_tail_only {
-            // Reconstruct lagrange interpolation from evaluations where the first
-            // sumation_set.len() points are zeros, and the remaining are provided.
-            // We read exactly (deg + 1 - sumation_set.len()) values: p(z) for z in [len..deg].
-            let zero_prefix = sumation_set.len();
-            let provided = verifier_state.next_extension_scalars_vec(deg + 1 - zero_prefix)?;
-            let evals = (0..zero_prefix)
-                .map(|i| (EF::from_usize(i), EF::ZERO))
-                .chain(
-                    (zero_prefix..=deg)
-                        .zip(provided.into_iter())
-                        .map(|(z, v)| (EF::from_usize(z), v)),
-                )
-                .collect::<Vec<_>>();
-            WhirDensePolynomial::lagrange_interpolation(&evals).unwrap()
-        } else {
-            if first_round {
-                // First round without skip: prover sent full coefficients
-                let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
-                WhirDensePolynomial::from_coefficients_vec(coeffs)
-            } else {
-                // Subsequent rounds: prover sends only deg coefficients; reconstruct the last one
-                let coeffs = verifier_state.next_extension_scalars_vec(deg)?;
-                let mut pol = WhirDensePolynomial::from_coefficients_vec(
-                    [coeffs.clone(), vec![EF::ZERO]].concat(),
-                );
-                let computed_sum: EF = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
-                // denom = sum_{s in sumation_set} s^deg
-                let mut denom = EF::ZERO;
-                for &s in &sumation_set {
-                    // exponentiation by squaring for EF
-                    let mut base = s;
-                    let mut exp = deg as u64;
-                    let mut acc = EF::ONE;
-                    while exp > 0 {
-                        if exp & 1 == 1 {
-                            acc *= base;
-                        }
-                        base *= base;
-                        exp >>= 1;
-                    }
-                    denom += acc;
-                }
-                // Make sum_{s} p(s) == target from previous round
-                let rhs = target - computed_sum;
-                let c_deg = rhs / denom;
-                pol.coeffs[deg] = c_deg;
-                pol
-            }
-        };
+        let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
+        let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
 
         let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
         if first_round {
@@ -152,9 +97,8 @@ where
         }
         let challenge = verifier_state.sample();
 
-        // Grinding deactivated for optimization check
-        // let pow_bits = grinding.pow_bits::<EF>(deg);
-        // verifier_state.check_pow_grinding(pow_bits)?;
+        let pow_bits = grinding.pow_bits::<EF>(deg);
+        verifier_state.check_pow_grinding(pow_bits)?;
 
         target = pol.evaluate(challenge);
         challenges.push(challenge);

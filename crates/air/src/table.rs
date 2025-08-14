@@ -3,10 +3,10 @@ use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, Field, TwoAdicField};
 
 use p3_uni_stark::{SymbolicAirBuilder, get_symbolic_constraints};
-use utils::{log2_up, univariate_selectors};
+use utils::log2_up;
 use whir_p3::{
     parameters::{MultivariateParameters, ProtocolParameters},
-    poly::{dense::WhirDensePolynomial, evals::EvaluationsList},
+    poly::evals::EvaluationsList,
     whir::parameters::WhirConfig,
 };
 
@@ -19,7 +19,7 @@ pub struct AirTable<F: Field, EF, A> {
     pub preprocessed_columns: Vec<EvaluationsList<F>>, // TODO 'sparse' preprocessed columns (with non zero values at cylic shifts)
     pub n_constraints: usize,
     pub constraint_degree: usize,
-    pub(crate) univariate_selectors: Vec<WhirDensePolynomial<F>>,
+    pub(crate) univariate_skips: usize,
 
     _phantom: std::marker::PhantomData<EF>,
 }
@@ -49,7 +49,7 @@ where
             preprocessed_columns,
             n_constraints,
             constraint_degree,
-            univariate_selectors: univariate_selectors(univariate_skips),
+            univariate_skips,
             _phantom: std::marker::PhantomData,
         }
     }

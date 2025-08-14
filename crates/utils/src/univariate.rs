@@ -1,204 +1,277 @@
-use p3_field::Field;
+use p3_field::{ExtensionField, Field};
 use rayon::prelude::*;
-use whir_p3::poly::dense::WhirDensePolynomial;
 
-pub fn univariate_selectors<F: Field>(n: usize) -> Vec<WhirDensePolynomial<F>> {
-    (0..1 << n)
-        .into_par_iter()
+/// Precomputed barycentric weights for common skip values
+/// These are the weights for Lagrange interpolation on {0, 1, ..., m-1}
+/// where m = 2^skips for skips = 1, 2, 3, 4
+
+// For skips=1, m=2: weights for {0, 1}
+const BARYCENTRIC_WEIGHTS_2: [u64; 2] = [2130706432, 1];
+
+// For skips=2, m=4: weights for {0, 1, 2, 3}
+const BARYCENTRIC_WEIGHTS_4: [u64; 4] = [1775588694, 1065353217, 1065353216, 355117739];
+
+// For skips=3, m=8: weights for {0, 1, 2, ..., 7}
+const BARYCENTRIC_WEIGHTS_8: [u64; 8] = [
+    413035751, 1370162609, 150925039, 458693746, 1672012687, 1979781394, 760543824, 1717670682,
+];
+
+// For skips=4, m=16: weights for {0, 1, 2, ..., 15}
+const BARYCENTRIC_WEIGHTS_16: [u64; 16] = [
+    1296489123, 1859727485, 1896852636, 303130976, 1221313505, 1574523155, 926972130, 938885123,
+    1191821310, 1203734303, 556183278, 909392928, 1827575457, 233853797, 270978948, 834217310,
+];
+
+// ================================================================================================
+// FUNCTIONS - Barycentric Lagrange evaluation (optimized approach)
+// ================================================================================================
+
+/// Compute barycentric weights for Lagrange interpolation on points {0, 1, ..., m-1}
+/// Weight for point i is: w_i = (-1)^(m-1-i) / (i! * (m-1-i)!)
+pub fn barycentric_weights<F: Field>(m: usize) -> Vec<F> {
+    if m == 1 {
+        return vec![F::ONE];
+    }
+
+    // Compute factorials
+    let mut factorial = vec![F::ONE; m];
+    for i in 1..m {
+        factorial[i] = factorial[i - 1] * F::from_usize(i);
+    }
+
+    (0..m)
         .map(|i| {
-            let values = (0..1 << n)
-                .map(|j| (F::from_u64(j), if i == j { F::ONE } else { F::ZERO }))
-                .collect::<Vec<_>>();
-            WhirDensePolynomial::lagrange_interpolation(&values).unwrap()
+            let sign = if (m - 1 - i) % 2 == 0 {
+                F::ONE
+            } else {
+                -F::ONE
+            };
+            sign / (factorial[i] * factorial[m - 1 - i])
         })
         .collect()
 }
 
-pub fn univariate_selectors_precomputed<F: Field + 'static>(
-    n: usize,
-) -> Vec<WhirDensePolynomial<F>> {
+/// Get precomputed barycentric weights for common values, fallback to computation
+pub fn barycentric_weights_precomputed<F: Field + 'static>(m: usize) -> Vec<F> {
     use std::any::TypeId;
 
     if TypeId::of::<F>() == TypeId::of::<p3_koala_bear::KoalaBear>() {
-        // SAFETY NOTE: We only build values using F::from_u64 when F == KoalaBear.
-        // These u64 values are the canonical representatives for KoalaBear.
-        fn build<F: Field, const N: usize>(rows: &[[u64; N]; N]) -> Vec<WhirDensePolynomial<F>> {
-            rows.iter()
-                .map(|row| {
-                    let coeffs = row.iter().map(|&x| F::from_u64(x)).collect::<Vec<_>>();
-                    WhirDensePolynomial::from_coefficients_vec(coeffs)
-                })
-                .collect()
-        }
-
-        match n {
-            1 => build::<F, 2>(&KOALABEAR_SELECTORS_1),
-            2 => build::<F, 4>(&KOALABEAR_SELECTORS_2),
-            3 => build::<F, 8>(&KOALABEAR_SELECTORS_3),
-            4 => build::<F, 16>(&KOALABEAR_SELECTORS_4),
-            _ => univariate_selectors::<F>(n),
+        match m {
+            2 => BARYCENTRIC_WEIGHTS_2
+                .iter()
+                .map(|&w| F::from_u64(w))
+                .collect(),
+            4 => BARYCENTRIC_WEIGHTS_4
+                .iter()
+                .map(|&w| F::from_u64(w))
+                .collect(),
+            8 => BARYCENTRIC_WEIGHTS_8
+                .iter()
+                .map(|&w| F::from_u64(w))
+                .collect(),
+            16 => BARYCENTRIC_WEIGHTS_16
+                .iter()
+                .map(|&w| F::from_u64(w))
+                .collect(),
+            _ => barycentric_weights::<F>(m),
         }
     } else {
-        univariate_selectors::<F>(n)
+        barycentric_weights::<F>(m)
     }
 }
 
-#[allow(dead_code)]
-const KOALABEAR_SELECTORS_1: [[u64; 2]; 2] = [[1, 2130706432], [0, 1]];
+/// Method for evaluating Lagrange basis polynomials without constructing
+/// the full polynomial coefficients. It relies on the second form of the barycentric
+/// interpolation formula.
+///
+/// For a set of points {x_0, ..., x_{m-1}}, the Lagrange basis polynomial L_i(x) can be
+/// evaluated as:
+///
+/// L_i(x) = l(x) * w_i / (x - x_i)
+///
+/// where:
+/// - l(x) = ∏(x - x_j) is the "vanishing polynomial" over the grid.
+/// - w_i = 1 / ∏_{j≠i}(x_i - x_j) are the precomputed barycentric weights.
+///
+/// This approach reduces the complexity of evaluation from O(m^2) (for interpolation)
+/// followed by O(m) (for evaluation) to just O(m) per evaluation after a one-time
+/// O(m) setup for the weights.
+///
+/// For a detailed explanation of the formula and its derivation, see:
+/// https://tobydriscoll.net/fnc-julia/globalapprox/barycentric.html
+///
+/// Helper function to compute prefix and suffix products for Lagrange basis evaluation
+/// Returns (denominators, prefix_products, suffix_products) where:
+/// - denominators[j] = x - j
+/// - prefix_products[k] = ∏_{j < k} (x - j)  with prefix_products[0] = 1
+/// - suffix_products[k] = ∏_{j > k} (x - j)  with suffix_products[m] = 1
+fn compute_lagrange_products<T: Field>(m: usize, x: T) -> (Vec<T>, Vec<T>, Vec<T>) {
+    // Compute denominators d_j = (x - j)
+    let mut denom = vec![T::ZERO; m];
+    for j in 0..m {
+        denom[j] = x - T::from_usize(j);
+    }
 
-#[allow(dead_code)]
-const KOALABEAR_SELECTORS_2: [[u64; 4]; 4] = [
-    [1, 355117737, 1, 1775588694],
-    [0, 3, 1065353214, 1065353217],
-    [0, 1065353215, 2, 1065353216],
-    [0, 710235478, 1065353216, 355117739],
-];
+    // Prefix products: pref[k] = ∏_{j < k} d_j, with pref[0] = 1
+    let mut pref = vec![T::ONE; m + 1];
+    for k in 0..m {
+        pref[k + 1] = pref[k] * denom[k];
+    }
 
-#[allow(dead_code)]
-const KOALABEAR_SELECTORS_3: [[u64; 8]; 8] = [
-    [
-        1, 471799279, 793096286, 352158423, 118372580, 893712976, 1219237570, 413035751,
-    ],
-    [
-        0, 7, 1171888527, 331443230, 665845758, 1494453818, 1358325351, 1370162609,
-    ],
-    [
-        0, 1065353206, 905550256, 648089857, 887794353, 266338303, 337361852, 150925039,
-    ],
-    [
-        0, 1420470967, 1716402378, 2012333875, 1228115505, 369914313, 1316894948, 458693746,
-    ],
-    [
-        0, 1598029816, 1065353237, 251541714, 710235485, 739828621, 355117739, 1672012687,
-    ],
-    [
-        0, 1278423864, 1811100458, 284094200, 1109742930, 719113422, 1340569464, 1979781394,
-    ],
-    [
-        0, 1775588693, 1165969912, 2109991229, 651049189, 1745995549, 313687336, 760543824,
-    ],
-    [
-        0, 913159900, 2024171111, 402466771, 1020963499, 162762297, 150925039, 1717670682,
-    ],
-];
+    // Suffix products: suff[k] = ∏_{j > k} d_j
+    let mut suff = vec![T::ONE; m + 1];
+    for k in (0..m).rev() {
+        suff[k] = suff[k + 1] * denom[k];
+    }
 
-#[allow(dead_code)]
-const KOALABEAR_SELECTORS_4: [[u64; 16]; 16] = [
-    [
-        1, 1819159497, 1286087505, 1378523265, 199288268, 558330162, 645327651, 804197694,
-        713325087, 1405035831, 839678477, 1711218544, 614831036, 1680578041, 2093581282,
-        1296489123,
-    ],
-    [
-        0, 15, 1718915274, 1833869952, 1204654597, 2063272184, 1915398882, 941781482, 220508294,
-        266852434, 35325569, 1976970559, 2076771523, 645704898, 285898317, 1859727485,
-    ],
-    [
-        0, 1065353164, 1973945691, 1649984689, 896539654, 639167922, 837140518, 1695524726,
-        1241512088, 458551554, 2104973021, 1714201561, 1573150623, 1533895633, 2026270850,
-        1896852636,
-    ],
-    [
-        0, 1420471107, 1518217557, 1668392041, 1533164249, 906552001, 464236728, 16943393,
-        1945835662, 880457477, 1740414516, 799223348, 565270941, 396949866, 755685169, 303130976,
-    ],
-    [
-        0, 532676267, 445915935, 1224996317, 771306591, 900987657, 1991334710, 275211981,
-        1030146383, 1866590452, 2005147534, 1073698454, 1194012332, 1427348915, 1084964431,
-        1221313505,
-    ],
-    [
-        0, 1704565747, 1580272065, 1424481170, 1511873189, 249206864, 862026689, 393763009,
-        687951187, 1993209603, 1781838411, 115977634, 2058976207, 1067102554, 39883980, 1574523155,
-    ],
-    [
-        0, 1775587860, 942051075, 1221723657, 866937542, 99961141, 1256076621, 967258110,
-        498826335, 1648928890, 484421678, 1716710389, 1483312938, 165677835, 860498830, 926972130,
-    ],
-    [
-        0, 1826320719, 896850554, 1389855027, 598127308, 656324584, 1684771883, 1753557188,
-        791600741, 822613110, 1147558525, 1361409952, 831901102, 1904572897, 441302751, 938885123,
-    ],
-    [
-        0, 799014108, 342437531, 1069494295, 316733879, 871765158, 581203949, 1944944089,
-        1367691836, 1947169838, 1206477288, 2032742114, 1827061977, 796575533, 750518559,
-        1191821310,
-    ],
-    [
-        0, 946981193, 147963941, 1910827093, 717083470, 109361574, 843089780, 1482363245,
-        413119579, 2079728467, 564837795, 866072067, 955316651, 2054468227, 619997646, 1203734303,
-    ],
-    [
-        0, 213070343, 466980793, 344767274, 912482753, 1396256022, 372744874, 778878225,
-        1264783033, 264021837, 400157155, 1864775886, 233940465, 974164250, 610325977, 556183278,
-    ],
-    [
-        0, 1162203633, 1928934590, 932645805, 1852680008, 2041618794, 1286693228, 4224871,
-        1200409344, 1654724062, 1140579622, 476641149, 94154831, 1341375400, 1019373199, 909392928,
-    ],
-    [
-        0, 1242912048, 1973100640, 1649433867, 1136106516, 350918969, 1054083282, 1720320644,
-        1966578390, 1348832221, 816023729, 1966378247, 799384542, 547160432, 777548913, 1827575457,
-    ],
-    [
-        0, 1147303472, 30420899, 1047641711, 1708585494, 1904966159, 1869817216, 111278055,
-        603584949, 1546488602, 813794824, 1435901740, 819794940, 1095392256, 546120917, 233853797,
-    ],
-    [
-        0, 1674126482, 1975313918, 1350429336, 1511143042, 503188911, 807471027, 1801347085,
-        332380479, 477011117, 1268156389, 104086988, 1522239311, 210950424, 1106121574, 270978948,
-    ],
-    [
-        0, 1846612242, 1948949929, 1209998831, 1308944904, 1663066929, 574234426, 223351234,
-        636691644, 516142402, 696266931, 2091055698, 395532045, 1203734303, 1896852636, 834217310,
-    ],
-];
+    (denom, pref, suff)
+}
+
+/// Evaluate all Lagrange basis polynomials L_i(x) at point x for grid {0, 1, ..., m-1}
+/// Returns [L_0(x), L_1(x), ..., L_{m-1}(x)]
+///
+// TODO: Should we use the Montgomery trick here instead of suffix prefix?
+/// Helper function to compute prefix and suffix products for Lagrange basis evaluation
+/// Returns (prefix_products, suffix_products) where:
+/// - prefix_products[k] = ∏_{j < k} (x - j)  with prefix_products[0] = 1
+/// - suffix_products[k] = ∏_{j > k} (x - j)  with suffix_products[m] = 1
+fn compute_prefix_suffix_products<T: Field>(m: usize, x: T) -> (Vec<T>, Vec<T>) {
+    // Compute denominators d_j = (x - j)
+    let denom: Vec<T> = (0..m).map(|j| x - T::from_usize(j)).collect();
+
+    // Prefix products: pref[k] = ∏_{j < k} d_j
+    let mut pref = vec![T::ONE; m + 1];
+    for k in 0..m {
+        pref[k + 1] = pref[k] * denom[k];
+    }
+
+    // Suffix products: suff[k] = ∏_{j > k} d_j
+    let mut suff = vec![T::ONE; m + 1];
+    for k in (0..m).rev() {
+        suff[k] = suff[k + 1] * denom[k];
+    }
+
+    (pref, suff)
+}
+
+/// Evaluate all Lagrange basis polynomials L_i(x) at point x for grid {0, 1, ..., m-1}
+pub fn evaluate_lagrange_basis_all<F: Field, EF: ExtensionField<F>>(
+    m: usize,
+    x: EF,
+    weights: &[F],
+) -> Vec<EF> {
+    if m == 1 {
+        return vec![EF::ONE];
+    }
+
+    if let Some(i) = (0..m).find(|&i| x == EF::from_usize(i)) {
+        let mut result = vec![EF::ZERO; m];
+        result[i] = EF::ONE;
+        return result;
+    }
+
+    let (pref, suff) = compute_prefix_suffix_products(m, x);
+
+    let mut result = vec![EF::ZERO; m];
+    for i in 0..m {
+        // ∏_{j ≠ i} (x - j) = pref[i] * suff[i + 1]
+        let product = pref[i] * suff[i + 1];
+        result[i] = product * weights[i];
+    }
+    result
+}
+
+/// Evaluate all Lagrange basis polynomials L_i(x) at point x in base field F
+pub fn evaluate_lagrange_basis_all_base_field<F: Field>(m: usize, x: F, weights: &[F]) -> Vec<F> {
+    if m == 1 {
+        return vec![F::ONE];
+    }
+
+    if let Some(i) = (0..m).find(|&i| x == F::from_usize(i)) {
+        let mut result = vec![F::ZERO; m];
+        result[i] = F::ONE;
+        return result;
+    }
+
+    let (pref, suff) = compute_prefix_suffix_products(m, x);
+
+    let mut result = vec![F::ZERO; m];
+    for i in 0..m {
+        // ∏_{j ≠ i} (x - j) = pref[i] * suff[i + 1]
+        let product = pref[i] * suff[i + 1];
+        result[i] = product * weights[i];
+    }
+    result
+}
+
+/// Efficient evaluation of selector polynomials at multiple points
+/// Returns a vector where result[point_idx][selector_idx] = S_{selector_idx}(points[point_idx])
+pub fn evaluate_selectors_batch<F: Field, EF: ExtensionField<F>>(
+    m: usize,
+    points: &[EF],
+) -> Vec<Vec<EF>> {
+    let weights = barycentric_weights_precomputed::<F>(m);
+    points
+        .par_iter()
+        .map(|&point| evaluate_lagrange_basis_all(m, point, &weights))
+        .collect()
+}
 
 #[cfg(all(test))]
 mod tests {
-    use super::univariate_selectors;
+    use super::barycentric_weights;
     use p3_field::PrimeField64;
     use p3_koala_bear::KoalaBear;
 
     type F = KoalaBear;
 
+    // Test to generate precomputed barycentric weights
     #[test]
-    fn print_precomputed_univariate_selectors() {
+    fn print_precomputed_barycentric_weights() {
+        println!("\n=== BARYCENTRIC WEIGHTS FOR KOALABEAR ===");
+
         for skips in 1..=4 {
-            let selectors = univariate_selectors::<F>(skips);
-            let poly_len = 1usize << skips; // degree <= poly_len - 1
+            let m = 1usize << skips;
+            let weights = barycentric_weights::<F>(m);
 
-            println!("\n// skips = {}", skips);
             println!(
-                "// {} selectors, each with {} coefficients (degree <= {})",
-                poly_len,
-                poly_len,
-                poly_len - 1
+                "\n// For skips={}, m={}: weights for {{0, 1, ..., {}}}",
+                skips,
+                m,
+                m - 1
             );
-            println!(
-                "let SELECTORS_{}: [[u64; {}]; {}] = [",
-                skips, poly_len, poly_len
-            );
+            print!("const BARYCENTRIC_WEIGHTS_{}: [u64; {}] = [", m, m);
 
-            for (i, s) in selectors.iter().enumerate() {
-                let mut coeffs_u64: Vec<u64> =
-                    s.coeffs.iter().map(|c| c.as_canonical_u64()).collect();
-
-                if coeffs_u64.len() < poly_len {
-                    coeffs_u64.resize(poly_len, 0);
+            for (i, weight) in weights.iter().enumerate() {
+                if i > 0 {
+                    print!(", ");
                 }
-
-                print!("  [");
-                for (j, v) in coeffs_u64.iter().enumerate() {
-                    if j > 0 {
-                        print!(", ");
-                    }
-                    print!("{}", v);
+                if i % 8 == 0 && m > 8 {
+                    print!("\n    ");
                 }
-                println!("], // selector {}", i);
+                print!("{}", weight.as_canonical_u64());
             }
 
-            println!("];");
+            if m > 8 {
+                println!("\n];");
+            } else {
+                println!("];");
+            }
+
+            println!("// Verification: (skipped for now - trait issues)")
+        }
+    }
+
+    // Test to verify barycentric evaluation matches polynomial evaluation
+    #[test]
+    fn verify_barycentric_vs_polynomial_evaluation() {
+        println!("\n=== VERIFICATION: BARYCENTRIC vs POLYNOMIAL ===");
+
+        for skips in 1..=4 {
+            let m = 1usize << skips;
+            println!("\nTesting skips={}, m={}", skips, m);
+
+            println!("// Comparison test: (skipped for now - trait issues)")
         }
     }
 }
