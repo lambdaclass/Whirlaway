@@ -129,8 +129,7 @@ where
     } else {
         0
     };
-    // println!("--- ROUND ----");
-    // println!("Comp degree: {comp_degree}");
+
     for z in start..=comp_degree * ((1 << skips) - 1) {
         let sum_z = if z == (1 << skips) - 1 {
             if let Some(eq_factor) = eq_factor {
@@ -165,19 +164,8 @@ where
         p_evals.push((F::from_usize(z), sum_z));
         p_evals_2.push(sum_z);
     }
-    // println!("Len of p_evals: {:?}", p_evals_2.len());
-    // println!("p_evals: {:?}", p_evals_2);
 
     fs_prover.add_extension_scalars(&p_evals_2);
-    if let Some(eq_factor) = &eq_factor {
-        let eq_evals: Vec<EF> = (0..1 << skips)
-            .into_par_iter()
-            .map(|i| selectors[i].evaluate(eq_factor[round]))
-            .collect::<Vec<_>>();
-        // println!("Len of eq_evals: {:?}", eq_evals.len());
-        // println!("eq_evals: {:?}", eq_evals);
-        fs_prover.add_extension_scalars(&eq_evals);
-    }
 
     let mut p = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
 
@@ -196,7 +184,6 @@ where
     // fs_prover.add_extension_scalars(&p.coeffs);
 
     let challenge = fs_prover.sample();
-    //println!("Challenge: {challenge}");
     challenges.push(challenge);
     *sum = p.evaluate(challenge);
     *n_vars -= skips;

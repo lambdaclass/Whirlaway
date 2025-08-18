@@ -1,12 +1,12 @@
+use crate::SumcheckGrinding;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, TwoAdicField};
-use utils::Evaluation;
+use rayon::prelude::*;
+use utils::{Evaluation, univariate_selectors};
 use whir_p3::{
     fiat_shamir::{errors::ProofError, verifier::VerifierState},
-    poly::dense::WhirDensePolynomial,
+    poly::{dense::WhirDensePolynomial, evals::EvaluationsList},
 };
-
-use crate::SumcheckGrinding;
 
 #[derive(Debug, Clone)]
 pub enum SumcheckError {
@@ -21,6 +21,7 @@ impl From<ProofError> for SumcheckError {
 }
 
 pub fn verify<F, EF, Challenger>(
+    eq_factor: Option<&[EF]>,
     is_zerocheck: bool,
     verifier_state: &mut VerifierState<F, EF, Challenger>,
     n_vars: usize,
@@ -35,6 +36,7 @@ where
     let sumation_sets = vec![(0..2).map(|i| EF::from_usize(i)).collect::<Vec<_>>(); n_vars];
     let max_degree_per_vars = vec![degree; n_vars];
     verify_core(
+        eq_factor,
         is_zerocheck,
         1,
         verifier_state,
@@ -45,6 +47,7 @@ where
 }
 
 pub fn verify_with_univariate_skip<F, EF, Challenger>(
+    eq_factor: Option<&[EF]>,
     is_zerocheck: bool,
     verifier_state: &mut VerifierState<F, EF, Challenger>,
     degree: usize,
@@ -66,6 +69,7 @@ where
     ]);
     let mut skips = skips;
     verify_core(
+        eq_factor,
         is_zerocheck,
         skips,
         verifier_state,
@@ -76,6 +80,7 @@ where
 }
 
 fn verify_core<EF, F, Challenger>(
+    eq_factor: Option<&[EF]>,
     mut is_zerocheck: bool,
     mut skips: usize,
     verifier_state: &mut VerifierState<F, EF, Challenger>,
@@ -92,48 +97,48 @@ where
     let mut challenges = Vec::new();
     let mut first_round = true;
     let (mut sum, mut target) = (EF::ZERO, EF::ZERO);
+    let mut round = 0;
 
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
-        // println!("---ROUND---");
-
         let mut p_evals = Vec::<(F, EF)>::new();
         let mut eq_evals = Vec::<(F, EF)>::new();
 
         if is_zerocheck {
             if first_round {
-                let proof_data =
-                    verifier_state.next_extension_scalars_vec(deg + 2 - (1 << skips))?; // 2 para data_p_evals + 2 para data_eq_evals
-                let data_p_evals = proof_data[..(deg + 2 - (1 << skips)) - (1 << skips)].to_vec();
-                let data_eq_evals = proof_data[(deg + 2 - (1 << skips)) - (1 << skips)..].to_vec();
+                let proof_data = verifier_state
+                    .next_extension_scalars_vec(deg + 2 - (1 << skips) - (1 << skips))?;
                 p_evals.extend((0..(1 << skips)).map(|i| (F::from_usize(i), EF::ZERO)));
                 p_evals.extend(
                     ((1 << skips)..=(deg + 2 - (1 << skips)))
-                        .zip(data_p_evals)
+                        .zip(proof_data)
                         .map(|(i, eval)| (F::from_usize(i), eval))
                         .collect::<Vec<_>>(),
                 );
-                eq_evals.extend(
-                    (0..1 << skips)
-                        .zip(data_eq_evals)
-                        .map(|(i, eval)| (F::from_usize(i), eval))
-                        .collect::<Vec<_>>(),
-                );
+
+                if let Some(eq_factor) = &eq_factor {
+                    let selectors = univariate_selectors::<F>(skips);
+                    eq_evals = (0..1 << skips)
+                        .into_par_iter()
+                        .map(|i| (F::from_usize(i), selectors[i].evaluate(eq_factor[round])))
+                        .collect::<Vec<_>>();
+                }
             } else {
-                let proof_data = verifier_state.next_extension_scalars_vec(deg + 2)?;
-                let data_p_evals = proof_data[..deg + 2 - (1 << skips)].to_vec();
-                let data_eq_evals = proof_data[deg + 2 - (1 << skips)..].to_vec();
+                let proof_data =
+                    verifier_state.next_extension_scalars_vec(deg + 2 - (1 << skips))?;
                 p_evals.extend(
-                    (0..=deg)
-                        .zip(data_p_evals)
+                    (0..(deg + 2 - (1 << skips)))
+                        .zip(proof_data)
                         .map(|(i, eval)| (F::from_usize(i), eval))
                         .collect::<Vec<_>>(),
                 );
-                eq_evals.extend(
-                    (0..1 << skips)
-                        .zip(data_eq_evals)
-                        .map(|(i, eval)| (F::from_usize(i), eval))
-                        .collect::<Vec<_>>(),
-                );
+
+                if let Some(eq_factor) = &eq_factor {
+                    let selectors = univariate_selectors::<F>(skips);
+                    eq_evals = (0..1 << skips)
+                        .into_par_iter()
+                        .map(|i| (F::from_usize(i), selectors[i].evaluate(eq_factor[round])))
+                        .collect::<Vec<_>>();
+                }
             }
         } else {
             let proof_data = verifier_state.next_extension_scalars_vec(deg + 1)?;
@@ -150,28 +155,10 @@ where
             pol *= &eq_poly;
         }
 
-        // println!("p_evals len: {:?}", p_evals.len());
-        // println!("p_evals: {:?}", p_evals);
-        // println!("eq_evals len: {:?}", eq_evals.len());
-        // println!("eq_evals: {:?}", eq_evals);
-
         // let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
         // let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
 
-        // println!("Degree: {deg}");
-        // println!("Polynomial coeffs: {:?}", pol.coeffs);
-        // println!("Polynomial coeff len: {:?}", pol.coeffs.len());
-        // println!("sumation set: {:?}", sumation_set);
-
-        // let pol_0 = pol.evaluate(EF::ZERO);
-        // let pol_1 = pol.evaluate(EF::ONE);
-        // println!("Polynomial at 0: {pol_0}");
-        // println!("Polynomial at 1: {pol_1}");
-
         let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
-
-        // println!("Computed sum: {computed_sum}");
-        // println!("Target: {target}");
 
         if first_round {
             first_round = false;
@@ -180,7 +167,6 @@ where
             return Err(SumcheckError::InvalidRound);
         }
         let challenge = verifier_state.sample();
-        //println!("Challenge: {challenge}");
 
         let pow_bits = grinding.pow_bits::<EF>(deg);
         verifier_state.check_pow_grinding(pow_bits)?;
@@ -188,6 +174,7 @@ where
         target = pol.evaluate(challenge);
         challenges.push(challenge);
         skips = 1;
+        round += 1;
     }
 
     Ok((
