@@ -9,7 +9,7 @@ pub use misc::*;
 mod constraints_folder;
 pub use constraints_folder::*;
 
-mod univariate;
+pub mod univariate;
 pub use univariate::*;
 
 mod multilinear;

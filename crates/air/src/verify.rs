@@ -5,7 +5,10 @@ use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use serde::{Deserialize, Serialize};
 use sumcheck::{SumcheckComputation, SumcheckError, SumcheckGrinding};
 use tracing::instrument;
-use utils::{ConstraintFolder, fold_multilinear_in_large_field, log2_up};
+use utils::{
+    ConstraintFolder, fold_multilinear_in_large_field, log2_up,
+    univariate::{barycentric_weights_precomputed, evaluate_lagrange_basis_all},
+};
 use whir_p3::{
     fiat_shamir::{errors::ProofError, verifier::VerifierState},
     poly::{evals::EvaluationsList, multilinear::MultilinearPoint},
@@ -111,11 +114,11 @@ impl<
         let witness_up = verifier_state.next_extension_scalars_vec(self.n_witness_columns())?;
         let witness_down = verifier_state.next_extension_scalars_vec(self.n_witness_columns())?;
 
-        let outer_selector_evals = self
-            .univariate_selectors
-            .iter()
-            .map(|s| s.evaluate(outer_sumcheck_challenge.point[0]))
-            .collect::<Vec<_>>();
+        let m = 1 << settings.univariate_skips;
+        let weights = barycentric_weights_precomputed(m);
+        let outer_selector_evals =
+            evaluate_lagrange_basis_all(m, outer_sumcheck_challenge.point[0], &weights);
+
         let preprocessed_up = self
             .preprocessed_columns
             .iter()
@@ -150,12 +153,10 @@ impl<
                 .collect::<Vec<_>>(),
         );
 
-        let zerocheck_selector_evals = self
-            .univariate_selectors
-            .iter()
-            .map(|s| s.evaluate(zerocheck_challenges[0]));
+        let zerocheck_selector_evals =
+            evaluate_lagrange_basis_all(m, zerocheck_challenges[0], &weights);
         if dot_product::<EF, _, _>(
-            zerocheck_selector_evals.clone(),
+            zerocheck_selector_evals.iter().copied(),
             outer_selector_evals.iter().copied(),
         ) * MultilinearPoint(zerocheck_challenges[1..].to_vec()).eq_poly_outside(
             &MultilinearPoint(outer_sumcheck_challenge.point[1..].to_vec()),
