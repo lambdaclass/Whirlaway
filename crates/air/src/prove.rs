@@ -1,7 +1,8 @@
 use p3_air::Air;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{
-    BasedVectorSpace, ExtensionField, Field, Packable, TwoAdicField, cyclic_subgroup_known_order,
+    BasedVectorSpace, ExtensionField, Field, Packable, PrimeField64, TwoAdicField,
+    cyclic_subgroup_known_order,
 };
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_util::log2_strict_usize;
@@ -39,7 +40,7 @@ cf https://eprint.iacr.org/2023/552.pdf and https://solvable.group/posts/super-a
 
 impl<F, EF, A> AirTable<F, EF, A>
 where
-    F: TwoAdicField,
+    F: TwoAdicField + PrimeField64,
     EF: ExtensionField<F> + TwoAdicField,
     A: for<'a> Air<ConstraintFolder<'a, F, F, EF>>
         + for<'a> Air<ConstraintFolder<'a, F, EF, EF>>

@@ -2,7 +2,7 @@ use std::{any::TypeId, borrow::Borrow};
 
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{BasedVectorSpace, PackedValue};
-use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_field::{ExtensionField, Field, PrimeField64, TwoAdicField};
 use rayon::prelude::*;
 use tracing::instrument;
 use utils::{
@@ -15,6 +15,9 @@ use whir_p3::{
 };
 
 use crate::{SumcheckComputation, SumcheckComputationPacked, SumcheckGrinding};
+
+const FIELD_HALF_U32: u32 = 1065353217; // 1/2 in KoalaBear
+const FIELD_QUARTER_U32: u32 = 1598029825; // 1/4 in KoalaBear  
 
 pub const MIN_VARS_FOR_GPU: usize = 0; // When there are a small number of variables, it's not worth using GPU
 
@@ -34,7 +37,7 @@ pub fn prove<F, NF, EF, M, SC, Challenger>(
     mut missing_mul_factor: Option<EF>,
 ) -> (Vec<EF>, Vec<EvaluationsList<EF>>, EF)
 where
-    F: TwoAdicField,
+    F: TwoAdicField + PrimeField64,
     NF: ExtensionField<F>,
     EF: ExtensionField<NF> + ExtensionField<F> + TwoAdicField,
     M: Borrow<EvaluationsList<NF>>,
@@ -111,7 +114,7 @@ pub fn sc_round<F, NF, EF, SC, Challenger>(
     missing_mul_factor: &mut Option<EF>,
 ) -> Vec<EvaluationsList<EF>>
 where
-    F: TwoAdicField,
+    F: TwoAdicField + PrimeField64,
     NF: ExtensionField<F>,
     EF: ExtensionField<NF> + ExtensionField<F> + TwoAdicField,
     SC: SumcheckComputation<F, NF, EF> + SumcheckComputationPacked<F, EF>,
@@ -185,7 +188,7 @@ where
                 batching_scalars,
                 eq_mle.as_ref(),
             );
-            h_half *= EF::from(F::ONE.halve()).square();
+            h_half *= EF::from(F::from_u32(FIELD_QUARTER_U32));
             if let Some(missing_mul_factor) = missing_mul_factor {
                 h_half *= *missing_mul_factor;
             }
@@ -204,7 +207,7 @@ where
             let p = WhirDensePolynomial::lagrange_interpolation(&[
                 (F::ZERO, h0),
                 (F::ONE, h1),
-                (F::ONE.halve(), h_half),
+                (F::from_u32(FIELD_HALF_U32), h_half),
             ])
             .unwrap();
 

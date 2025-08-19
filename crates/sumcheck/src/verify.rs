@@ -8,6 +8,8 @@ use whir_p3::{
 
 use crate::SumcheckGrinding;
 
+const FIELD_HALF_U32: u32 = 1065353217; // 1/2 in KoalaBear
+
 #[derive(Debug, Clone)]
 pub enum SumcheckError {
     Fs(ProofError),
@@ -99,7 +101,11 @@ where
                 };
 
                 // Reconstruct polynomial using Lagrange interpolation over {0, 1, 1/2}
-                let p_evals = [(EF::ZERO, *h0), (EF::ONE, *h1), (EF::ONE.halve(), *h_half)];
+                let p_evals = [
+                    (EF::ZERO, *h0),
+                    (EF::ONE, *h1),
+                    (EF::from_u32(FIELD_HALF_U32), *h_half),
+                ];
                 let pol = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
 
                 // Compute sum over the summation set {0, 1} to verify the round
