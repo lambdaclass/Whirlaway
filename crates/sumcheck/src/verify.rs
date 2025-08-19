@@ -85,10 +85,37 @@ where
     let (mut sum, mut target) = (EF::ZERO, EF::ZERO);
 
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
-        let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
-        let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
+        let (pol, computed_sum) = match (deg, sumation_set.len()) {
+            (2, 2) if sumation_set[0] == EF::ZERO && sumation_set[1] == EF::ONE => {
+                // The prover sent h(0), h(1), and h(1/2) directly instead of polynomial
+                // coefficients. We reconstruct the polynomial using Lagrange interpolation
+                // over these three points, which gives us the same result as evaluating
+                // at {0, 1, 2} but with better performance.
 
-        let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+                // Receive h(0), h(1), and h(1/2) directly from the prover
+                let h_values = verifier_state.next_extension_scalars_vec(3)?;
+                let h0 = h_values[0];
+                let h1 = h_values[1];
+                let h_half = h_values[2];
+
+                // Reconstruct polynomial using Lagrange interpolation over {0, 1, 1/2}
+                let p_evals = vec![(EF::ZERO, h0), (EF::ONE, h1), (EF::ONE.halve(), h_half)];
+                let pol = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
+
+                // Compute sum over the summation set {0, 1} to verify the round
+                let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+
+                (pol, computed_sum)
+            }
+            _ => {
+                // Standard case: receive coefficients and create polynomial
+                let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
+                let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
+                let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+                (pol, computed_sum)
+            }
+        };
+
         if first_round {
             first_round = false;
             sum = computed_sum;
