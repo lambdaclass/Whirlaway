@@ -131,14 +131,30 @@ where
             // eq(1/2, 1) = 1/2 * 1 + 0 * 1/2 = 1/2
             //
             // Since this is symmetric, we can compute h(1/2) more efficiently:
-            // h(1/2) = sum_b p(1/2, b) * q(1/2, b)
-            //        = sum_b (eq(1/2, 0) * p(0, b) + eq(1/2, 1) * p(1, b)) *
-            //              (eq(1/2, 0) * q(0, b) + eq(1/2, 1) * q(1, b))
-            //        = 1/4 * sum_b (p(0, b) + p(1, b)) * (q(0, b) + q(1, b))
+            // h(1/2) = ∑_b f(1/2, b)
+            //        = ∑_b (eq(1/2, 0) * f(0, b) + eq(1/2, 1) * f(1, b))
+            //        = ∑_b (1/2 * f(0, b) + 1/2 * f(1, b))
+            //        = 1/4 * ∑_b (f(0, b) + f(1, b))
             //
-            //  We only need 1 multiplication per hypercube element instead of 3
+            //  We only need 1 evaluation per hypercube element instead of 3
 
             // Calculate h(0) - evaluate at z = 0
+            let h0 = {
+                let folding_scalars: Vec<_> =
+                    selectors.iter().map(|s| s.evaluate(F::ZERO)).collect();
+                let folded = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars);
+                let mut h =
+                    compute_over_hypercube(&folded, computation, batching_scalars, eq_mle.as_ref());
+                if let Some(missing_mul_factor) = missing_mul_factor {
+                    h *= *missing_mul_factor;
+                }
+                h
+            };
+
+            // Derive h(1) from the constraint: h(1) = total_sum - h(0)
+            let h1 = *sum - h0;
+
+            // Fold multilinears at z = 0 to get f(0, b) for all b
             let folded_0 = batch_fold_multilinear_in_small_field(
                 multilinears,
                 &selectors
@@ -146,15 +162,7 @@ where
                     .map(|s| s.evaluate(F::ZERO))
                     .collect::<Vec<_>>(),
             );
-            let mut h0 =
-                compute_over_hypercube(&folded_0, computation, batching_scalars, eq_mle.as_ref());
-            if let Some(missing_mul_factor) = missing_mul_factor {
-                h0 *= *missing_mul_factor;
-            }
-
-            // Calculate h(1/2) using the mathematical optimization
-            // Instead of evaluating at z = 1/2 directly, we use the formula:
-            // h(1/2) = 1/4 * sum_b (p(0, b) + p(1, b)) * (q(0, b) + q(1, b))
+            // Fold multilinears at z = 1 to get f(1, b) for all b
             let folded_1 = batch_fold_multilinear_in_small_field(
                 multilinears,
                 &selectors
@@ -163,14 +171,14 @@ where
                     .collect::<Vec<_>>(),
             );
 
-            // Add the folded polynomials element-wise: (p(0, b) + p(1, b))
-            let summed_multilinears = folded_0
+            // Sum f(0, b) + f(1, b) for all b
+            let summed_multilinears: Vec<_> = folded_0
                 .iter()
                 .zip(folded_1.iter())
-                .map(|(p0, p1)| add_multilinears(p0, p1))
-                .collect::<Vec<_>>();
+                .map(|(f0, f1)| add_multilinears(f0, f1))
+                .collect();
 
-            // Compute sum over hypercube and multiply by 1/4
+            // Apply the optimization: h(1/2) = 1/4 * ∑_b (f(0, b) + f(1, b))
             let mut h_half = compute_over_hypercube(
                 &summed_multilinears,
                 computation,
@@ -182,15 +190,17 @@ where
                 h_half *= *missing_mul_factor;
             }
 
-            // Derive h(1) from the total sum constraint
-            // Since h(0) + h(1) = total_sum, we have h(1) = total_sum - h(0)
-            let h1 = *sum - h0;
+            // Verify that our derivation is correct: h(0) + h(1) should equal total_sum
+            // Since h(1) = total_sum - h(0), this should always be zero
+            // TODO: check if we can remove this check
+            // debug_assert!(
+            //     (h0 + h1 - *sum).is_zero(),
+            //     "Derivation error: h(0) + h(1) != total_sum"
+            // );
 
             // Send h(0), h(1), and h(1/2) directly instead of polynomial coefficients
             fs_prover.add_extension_scalars(&[h0, h1, h_half]);
 
-            // Reconstruct polynomial using Lagrange interpolation over {0, 1, 1/2}
-            // This gives us the same polynomial that would result from evaluating at {0, 1, 2}
             let p = WhirDensePolynomial::lagrange_interpolation(&[
                 (F::ZERO, h0),
                 (F::ONE, h1),
@@ -208,10 +218,7 @@ where
             );
             fs_prover.pow_grinding(pow_bits);
 
-            let folding_scalars = selectors
-                .iter()
-                .map(|s| s.evaluate(challenge))
-                .collect::<Vec<_>>();
+            let folding_scalars: Vec<_> = selectors.iter().map(|s| s.evaluate(challenge)).collect();
             if let Some(eq_factor) = eq_factor {
                 *missing_mul_factor = Some(
                     selectors

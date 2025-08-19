@@ -94,12 +94,12 @@ where
 
                 // Receive h(0), h(1), and h(1/2) directly from the prover
                 let h_values = verifier_state.next_extension_scalars_vec(3)?;
-                let h0 = h_values[0];
-                let h1 = h_values[1];
-                let h_half = h_values[2];
+                let [h0, h1, h_half] = h_values.as_slice() else {
+                    return Err(SumcheckError::InvalidRound);
+                };
 
                 // Reconstruct polynomial using Lagrange interpolation over {0, 1, 1/2}
-                let p_evals = vec![(EF::ZERO, h0), (EF::ONE, h1), (EF::ONE.halve(), h_half)];
+                let p_evals = [(EF::ZERO, *h0), (EF::ONE, *h1), (EF::ONE.halve(), *h_half)];
                 let pol = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
 
                 // Compute sum over the summation set {0, 1} to verify the round
