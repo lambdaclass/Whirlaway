@@ -22,10 +22,6 @@ const BARYCENTRIC_WEIGHTS_16: [u64; 16] = [
     1191821310, 1203734303, 556183278, 909392928, 1827575457, 233853797, 270978948, 834217310,
 ];
 
-// ================================================================================================
-// FUNCTIONS - Barycentric Lagrange evaluation (optimized approach)
-// ================================================================================================
-
 /// Compute barycentric weights for Lagrange interpolation on points {0, 1, ..., m-1}
 /// Weight for point i is: w_i = (-1)^(m-1-i) / (i! * (m-1-i)!)
 pub fn barycentric_weights<F: Field>(m: usize) -> Vec<F> {
