@@ -155,3 +155,11 @@ utils = { path = "crates/utils" }
 [[bench]]
 name = "folding_benchmarks"
 harness = false
+
+[[bench]]
+name = "poseidon2_benchmark"
+harness = false
+
+[[bench]]
+name = "sumcheck_timings"
+harness = false

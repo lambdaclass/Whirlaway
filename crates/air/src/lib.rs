@@ -6,7 +6,7 @@ mod uni_skip_utils;
 mod utils;
 mod verify;
 
-const WHIR_POW_BITS: usize = 16;
+const WHIR_POW_BITS: usize = 0;
 
 use whir_p3::parameters::{FoldingFactor, errors::SecurityAssumption};
 
