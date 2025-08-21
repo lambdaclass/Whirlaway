@@ -2,8 +2,9 @@ use ::air::AirSettings;
 use air::table::AirTable;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_challenger::DuplexChallenger;
+use p3_field::PrimeCharacteristicRing;
+use p3_field::PrimeField64;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{PrimeCharacteristicRing, PrimeField64};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
 use p3_matrix::Matrix;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -15,12 +16,11 @@ use tracing_forest::ForestLayer;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
 use whir_p3::{fiat_shamir::domain_separator::DomainSeparator, whir::parameters::WhirConfig};
 
-// Field / permutation choices (reuse Poseidon2 sponge for Merkle/Challenger)
 type Poseidon16 = Poseidon2KoalaBear<16>;
 type Poseidon24 = Poseidon2KoalaBear<24>;
 
-type MerkleHash = PaddingFreeSponge<Poseidon24, 24, 16, 8>; // leaf hashing
-type MerkleCompress = TruncatedPermutation<Poseidon16, 2, 8, 16>; // 2-to-1 compression
+type MerkleHash = PaddingFreeSponge<Poseidon24, 24, 16, 8>;
+type MerkleCompress = TruncatedPermutation<Poseidon16, 2, 8, 16>;
 type MyChallenger = DuplexChallenger<F, Poseidon16, 16, 8>;
 
 type F = KoalaBear;
@@ -32,7 +32,7 @@ pub struct FibonacciBenchmark {
     pub settings: AirSettings,
     pub prover_time: Duration,
     pub verifier_time: Duration,
-    pub proof_size: f64, // in bytes
+    pub proof_size: f64,
 }
 
 impl fmt::Display for FibonacciBenchmark {
@@ -92,7 +92,7 @@ where
 
         // Boundary constraints at first row: a_0 = 0, b_0 = 1
         builder.assert_zero(a_up * sel_first_up.clone());
-        builder.assert_zero((b_up.clone() - B::Expr::ONE) * sel_first_up.clone());
+        builder.assert_zero(b_up.clone() * sel_first_up.clone() - sel_first_up.clone());
 
         // Public value at last row: b_last == pub_x
         builder.assert_zero((b_up - pub_x_up) * sel_last_up);
@@ -104,6 +104,7 @@ pub fn prove_fibonacci(
     settings: AirSettings,
     _n_preprocessed_columns: usize,
     display_logs: bool,
+    expected_last: F,
 ) -> FibonacciBenchmark {
     if display_logs {
         let env_filter = EnvFilter::builder()
@@ -148,9 +149,8 @@ pub fn prove_fibonacci(
     if let Some(last) = sel_last.last_mut() {
         *last = F::ONE;
     }
-    // pub_x column: expected right value at last row, replicated for convenience
-    let pub_x_val = *c1.last().unwrap_or(&F::ZERO);
-    let pub_x = vec![pub_x_val; n_rows];
+    // pub_x column: externally provided expected value at last row, replicated for convenience
+    let pub_x = vec![expected_last; n_rows];
 
     let preprocessed_columns = vec![
         whir_p3::poly::evals::EvaluationsList::new(sel_trans),
@@ -170,7 +170,7 @@ pub fn prove_fibonacci(
         log_n_rows,
         settings.univariate_skips,
         preprocessed_columns,
-        2, // casamos mejor con el shape del sumcheck cuando hay skip>=1
+        2,
     );
 
     // Merkle and challenger setup
