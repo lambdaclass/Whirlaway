@@ -8,8 +8,6 @@ use whir_p3::{
 
 use crate::SumcheckGrinding;
 
-const FIELD_HALF_U32: u32 = 1065353217; // 1/2 in KoalaBear
-
 #[derive(Debug, Clone)]
 pub enum SumcheckError {
     Fs(ProofError),
@@ -89,28 +87,10 @@ where
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
         let (pol, computed_sum) = match (deg, sumation_set.len()) {
             (2, 2) if sumation_set[0] == EF::ZERO && sumation_set[1] == EF::ONE => {
-                // The prover sent h(0), h(1), and h(1/2) directly instead of polynomial
-                // coefficients. We reconstruct the polynomial using Lagrange interpolation
-                // over these three points, which gives us the same result as evaluating
-                // at {0, 1, 2} but with better performance.
-
-                // Receive h(0), h(1), and h(1/2) directly from the prover
-                let h_values = verifier_state.next_extension_scalars_vec(3)?;
-                let [h0, h1, h_half] = h_values.as_slice() else {
-                    return Err(SumcheckError::InvalidRound);
-                };
-
-                // Reconstruct polynomial using Lagrange interpolation over {0, 1, 1/2}
-                let p_evals = [
-                    (EF::ZERO, *h0),
-                    (EF::ONE, *h1),
-                    (EF::from_u32(FIELD_HALF_U32), *h_half),
-                ];
-                let pol = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
-
-                // Compute sum over the summation set {0, 1} to verify the round
+                // Case for the optimized sumcheck using {0,1/2,1} as evaluation points.
+                let coeffs = verifier_state.next_extension_scalars_vec(3)?;
+                let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
                 let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
-
                 (pol, computed_sum)
             }
             _ => {

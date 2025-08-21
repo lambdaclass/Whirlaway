@@ -16,7 +16,7 @@ use whir_p3::{
 
 use crate::{SumcheckComputation, SumcheckComputationPacked, SumcheckGrinding};
 
-const FIELD_HALF_U32: u32 = 1065353217; // 1/2 in KoalaBear
+// const FIELD_HALF_U32: u32 = 1065353217; // 1/2 in KoalaBear
 const FIELD_QUARTER_U32: u32 = 1598029825; // 1/4 in KoalaBear  
 
 pub const MIN_VARS_FOR_GPU: usize = 0; // When there are a small number of variables, it's not worth using GPU
@@ -133,13 +133,13 @@ where
             // eq(1/2, 0) = 1/2 * 0 + (1 - 1/2) * 1 = 1/2
             // eq(1/2, 1) = 1/2 * 1 + 0 * 1/2 = 1/2
             //
-            // Since this is symmetric, we can compute h(1/2) more efficiently:
-            // h(1/2) = ∑_b f(1/2, b)
-            //        = ∑_b (eq(1/2, 0) * f(0, b) + eq(1/2, 1) * f(1, b))
-            //        = ∑_b (1/2 * f(0, b) + 1/2 * f(1, b))
-            //        = 1/4 * ∑_b (f(0, b) + f(1, b))
-            //
-            //  We only need 1 evaluation per hypercube element instead of 3
+            // Since this is symmetric, we can compute h(1/2) more efficiently.
+            // Two cases:
+            //  - Linear in z: if h(z) = ∑_b f(z, b) with f linear in z, then
+            //      h(1/2) = 1/2 * ∑_b (f(0, b) + f(1, b)).
+            //  - Product (this case): if h(z) = ∑_b p(z, b) * q(z, b) with p,q lineal en z, then
+            //      h(1/2) = 1/4 * ∑_b (p(0, b) + p(1, b)) * (q(0, b) + q(1, b)).
+            //  This yields only one multiplication per hypercube element instead of three evaluations at {0,1,2}.
 
             // Calculate h(0) - evaluate at z = 0
             let h0 = {
@@ -201,19 +201,27 @@ where
             //     "Derivation error: h(0) + h(1) != total_sum"
             // );
 
-            // Send h(0), h(1), and h(1/2) directly instead of polynomial coefficients
-            fs_prover.add_extension_scalars(&[h0, h1, h_half]);
+            // Send polynomial coefficients [a0, a1, a2] directly instead of values
+            // at z in {0, 1, 1/2}.
 
-            let p = WhirDensePolynomial::lagrange_interpolation(&[
-                (F::ZERO, h0),
-                (F::ONE, h1),
-                (F::from_u32(FIELD_HALF_U32), h_half),
-            ])
-            .unwrap();
+            // Reconstruct quadratic coefficients directly solving the system of equations:
+            // a0 = h(0) = h0
+            // a1 = 4*h(1/2) - h(1) - 3*h(0)
+            // a2 = 2*h(1) + 2*h(0) - 4*h(1/2)
 
+            // TODO: use constants
+            let four = EF::from_usize(4);
+            let three = EF::from_usize(3);
+            let two = EF::from_usize(2);
+            let a0 = h0;
+            let a1 = four * h_half - h1 - three * h0;
+            let a2 = two * h1 + two * h0 - four * h_half;
+
+            fs_prover.add_extension_scalars(&[a0, a1, a2]);
             let challenge = fs_prover.sample();
             challenges.push(challenge);
-            *sum = p.evaluate(challenge);
+            let p_at_challenge = a0 + a1 * challenge + a2 * (challenge * challenge);
+            *sum = p_at_challenge;
 
             *n_vars -= skips;
             let pow_bits = grinding.pow_bits::<EF>(
@@ -396,3 +404,14 @@ where
     let res = computation.eval(point, batching_scalars);
     eq_mle_eval.map_or(res, |factor| res * factor)
 }
+
+// Delete before merging
+// Notes: For cubic polynomials (degree 3) with skips = 1, we could use 4 points
+// to avoid Lagrange interpolation by solving the system directly:
+//
+// Using points {0, 1, 1/2, -1} and evaluations {h0, h1, h_half, h_minus_one}:
+//
+// a0 = h0
+// a2 = 1/2 * (h_minus_one + h1 - 2*a0)
+// a3 = -1/3 * (8*h_half - 4*(h0 + h1) + 2*a2)
+// a1 = h1 - h0 - (a2 + a3)

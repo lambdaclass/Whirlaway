@@ -10,7 +10,7 @@ use whirlaway::examples::poseidon2::prove_poseidon2;
 
 const LOG_N_ROWS: usize = 18;
 const LOG_INV_RATE: usize = 1;
-const SECURITY_BITS: usize = 0; // disable grinding for clean timings
+const SECURITY_BITS: usize = 128;
 const UNIVARIATE_SKIPS: usize = 4;
 
 #[derive(Copy, Clone, Eq, PartialEq)]

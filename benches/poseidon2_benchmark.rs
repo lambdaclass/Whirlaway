@@ -7,7 +7,6 @@ use whirlaway::examples::poseidon2::prove_poseidon2;
 fn poseidon2_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("poseidon2_protocol");
 
-    // Configurar para solo 10 muestras para que sea más rápido
     group.sample_size(30);
 
     group.bench_function("complete_protocol", |b| {
@@ -16,7 +15,7 @@ fn poseidon2_benchmark(c: &mut Criterion) {
             let benchmark = prove_poseidon2(
                 log_n_rows,
                 AirSettings::new(
-                    0, // SECURITY_BITS: disable grinding for clean timing
+                    128,
                     SecurityAssumption::CapacityBound,
                     FoldingFactor::ConstantFromSecondRound(7, 4),
                     log_inv_rate,
@@ -24,7 +23,7 @@ fn poseidon2_benchmark(c: &mut Criterion) {
                     5,
                 ),
                 0,
-                false, // Sin logs para evitar conflictos
+                false,
             );
             black_box(benchmark);
         });
