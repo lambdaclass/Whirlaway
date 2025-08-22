@@ -148,10 +148,17 @@ p3-uni-stark.workspace = true
 
 
 [dev-dependencies]
+itertools = "0.13"
 criterion = { version = "0.5", features = ["html_reports"] }
 utils = { path = "crates/utils" }
+sumcheck = { path = "crates/sumcheck" }
 
 
 [[bench]]
 name = "folding_benchmarks"
+harness = false
+
+
+[[bench]]
+name = "sc_round_benchmarks"
 harness = false
