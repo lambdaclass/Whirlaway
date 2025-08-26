@@ -131,6 +131,7 @@ where
 
     for z in start..=comp_degree * ((1 << skips) - 1) {
         let sum_z = if z == (1 << skips) - 1 {
+            // This evaluation could be computed by the verifier.
             if let Some(eq_factor) = eq_factor {
                 (*sum
                     - (0..(1 << skips) - 1)
