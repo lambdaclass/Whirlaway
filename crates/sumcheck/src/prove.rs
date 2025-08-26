@@ -16,9 +16,6 @@ use whir_p3::{
 
 use crate::{SumcheckComputation, SumcheckComputationPacked, SumcheckGrinding};
 
-// const FIELD_HALF_U32: u32 = 1065353217; // 1/2 in KoalaBear
-const FIELD_QUARTER_U32: u32 = 1598029825; // 1/4 in KoalaBear  
-
 pub const MIN_VARS_FOR_GPU: usize = 0; // When there are a small number of variables, it's not worth using GPU
 
 #[allow(clippy::too_many_arguments)]
@@ -134,45 +131,23 @@ where
             // eq(1/2, 1) = 1/2 * 1 + 0 * 1/2 = 1/2
             //
             // Since this is symmetric, we can compute h(1/2) more efficiently.
-            // Two cases:
-            //  - Linear in z: if h(z) = ∑_b f(z, b) with f linear in z, then
-            //      h(1/2) = 1/2 * ∑_b (f(0, b) + f(1, b)).
-            //  - Product (this case): if h(z) = ∑_b p(z, b) * q(z, b) with p,q lineal en z, then
+            // In our case since we have a product of linear polynomials, we can compute h(1/2) as:
+            // h(z) = ∑_b p(z, b) * q(z, b) with p,q linear in z, then
             //      h(1/2) = 1/4 * ∑_b (p(0, b) + p(1, b)) * (q(0, b) + q(1, b)).
             //  This yields only one multiplication per hypercube element instead of three evaluations at {0,1,2}.
 
-            // Calculate h(0) - evaluate at z = 0
-            let h0 = {
-                let folding_scalars: Vec<_> =
-                    selectors.iter().map(|s| s.evaluate(F::ZERO)).collect();
-                let folded = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars);
-                let mut h =
-                    compute_over_hypercube(&folded, computation, batching_scalars, eq_mle.as_ref());
-                if let Some(missing_mul_factor) = missing_mul_factor {
-                    h *= *missing_mul_factor;
-                }
-                h
-            };
+            let folding_scalars_0: Vec<_> = selectors.iter().map(|s| s.evaluate(F::ZERO)).collect();
+            let folding_scalars_1: Vec<_> = selectors.iter().map(|s| s.evaluate(F::ONE)).collect();
+
+            let folded_0 = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars_0);
+            let folded_1 = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars_1);
+
+            // Calculate h(0)
+            let h0 =
+                compute_over_hypercube(&folded_0, computation, batching_scalars, eq_mle.as_ref());
 
             // Derive h(1) from the constraint: h(1) = total_sum - h(0)
             let h1 = *sum - h0;
-
-            // Fold multilinears at z = 0 to get f(0, b) for all b
-            let folded_0 = batch_fold_multilinear_in_small_field(
-                multilinears,
-                &selectors
-                    .iter()
-                    .map(|s| s.evaluate(F::ZERO))
-                    .collect::<Vec<_>>(),
-            );
-            // Fold multilinears at z = 1 to get f(1, b) for all b
-            let folded_1 = batch_fold_multilinear_in_small_field(
-                multilinears,
-                &selectors
-                    .iter()
-                    .map(|s| s.evaluate(F::ONE))
-                    .collect::<Vec<_>>(),
-            );
 
             // Sum f(0, b) + f(1, b) for all b
             let summed_multilinears: Vec<_> = folded_0
@@ -188,57 +163,39 @@ where
                 batching_scalars,
                 eq_mle.as_ref(),
             );
-            h_half *= EF::from(F::from_u32(FIELD_QUARTER_U32));
-            if let Some(missing_mul_factor) = missing_mul_factor {
-                h_half *= *missing_mul_factor;
-            }
+            // Multiply by 1/4 using two-adic division for clarity/consistency
+            h_half *= EF::from(F::ONE.div_2exp_u64(2));
 
-            // Verify that our derivation is correct: h(0) + h(1) should equal total_sum
-            // Since h(1) = total_sum - h(0), this should always be zero
-            // TODO: check if we can remove this check
-            // debug_assert!(
-            //     (h0 + h1 - *sum).is_zero(),
-            //     "Derivation error: h(0) + h(1) != total_sum"
-            // );
+            // Instead of sending h(0), h(1), h(1/2) and interpolating, we compute
+            // the quadratic coefficients [a0, a1, a2] directly from the known values.
+            //
+            // Given the quadratic polynomial p(z) = a0 + a1*z + a2*z**2, we know:
+            //   p(0) = h0      (evaluated at z = 0)
+            //   p(1) = h1      (evaluated at z = 1)
+            //   p(1/2) = h_half (evaluated at z = 1/2)
+            //
+            // Solving the system of equations yields:
+            //   a0 = h0
+            //   a2 = 2*(h0 + h1 - 2*h_half)
+            //   a1 = h1 - a0 - a2
 
-            // Send polynomial coefficients [a0, a1, a2] directly instead of values
-            // at z in {0, 1, 1/2}.
-
-            // Reconstruct quadratic coefficients directly solving the system of equations:
-            // a0 = h(0) = h0
-            // a1 = 4*h(1/2) - h(1) - 3*h(0)
-            // a2 = 2*h(1) + 2*h(0) - 4*h(1/2)
-
-            // TODO: use constants
-            let four = EF::from_usize(4);
-            let three = EF::from_usize(3);
-            let two = EF::from_usize(2);
             let a0 = h0;
-            let a1 = four * h_half - h1 - three * h0;
-            let a2 = two * h1 + two * h0 - four * h_half;
+            let a2 = (h0 + h1 - h_half.double()).double();
+            let a1 = h1 - a0 - a2;
 
             fs_prover.add_extension_scalars(&[a0, a1, a2]);
             let challenge = fs_prover.sample();
             challenges.push(challenge);
-            let p_at_challenge = a0 + a1 * challenge + a2 * (challenge * challenge);
+
+            // Use Horner's method for efficient polynomial evaluation: (a2*x + a1)*x + a0
+            let p_at_challenge = (a2 * challenge + a1) * challenge + a0;
             *sum = p_at_challenge;
 
             *n_vars -= skips;
-            let pow_bits = grinding.pow_bits::<EF>(
-                (comp_degree + usize::from(eq_factor.is_some())) * ((1 << skips) - 1),
-            );
+            let pow_bits = grinding.pow_bits::<EF>(comp_degree);
             fs_prover.pow_grinding(pow_bits);
 
             let folding_scalars: Vec<_> = selectors.iter().map(|s| s.evaluate(challenge)).collect();
-            if let Some(eq_factor) = eq_factor {
-                *missing_mul_factor = Some(
-                    selectors
-                        .iter()
-                        .map(|s| s.evaluate(eq_factor[round]) * s.evaluate(challenge))
-                        .sum::<EF>()
-                        * missing_mul_factor.unwrap_or(EF::ONE),
-                );
-            }
             batch_fold_multilinear_in_large_field(multilinears, &folding_scalars)
         }
         _ => {
@@ -404,14 +361,3 @@ where
     let res = computation.eval(point, batching_scalars);
     eq_mle_eval.map_or(res, |factor| res * factor)
 }
-
-// Delete before merging
-// Notes: For cubic polynomials (degree 3) with skips = 1, we could use 4 points
-// to avoid Lagrange interpolation by solving the system directly:
-//
-// Using points {0, 1, 1/2, -1} and evaluations {h0, h1, h_half, h_minus_one}:
-//
-// a0 = h0
-// a2 = 1/2 * (h_minus_one + h1 - 2*a0)
-// a3 = -1/3 * (8*h_half - 4*(h0 + h1) + 2*a2)
-// a1 = h1 - h0 - (a2 + a3)
