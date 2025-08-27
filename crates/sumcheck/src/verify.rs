@@ -85,10 +85,23 @@ where
     let (mut sum, mut target) = (EF::ZERO, EF::ZERO);
 
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
-        let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
-        let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
+        let (pol, computed_sum) = match (deg, sumation_set.len()) {
+            (2, 2) if sumation_set[0] == EF::ZERO && sumation_set[1] == EF::ONE => {
+                // Case for the optimized sumcheck using {0,1/2,1} as evaluation points.
+                let coeffs = verifier_state.next_extension_scalars_vec(3)?;
+                let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
+                let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+                (pol, computed_sum)
+            }
+            _ => {
+                // Standard case: receive coefficients and create polynomial
+                let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
+                let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
+                let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+                (pol, computed_sum)
+            }
+        };
 
-        let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
         if first_round {
             first_round = false;
             sum = computed_sum;

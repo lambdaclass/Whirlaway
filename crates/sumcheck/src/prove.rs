@@ -2,11 +2,11 @@ use std::{any::TypeId, borrow::Borrow};
 
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{BasedVectorSpace, PackedValue};
-use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_field::{ExtensionField, Field, PrimeField64, TwoAdicField};
 use rayon::prelude::*;
 use tracing::instrument;
 use utils::{
-    batch_fold_multilinear_in_large_field, batch_fold_multilinear_in_small_field,
+    add_multilinears, batch_fold_multilinear_in_large_field, batch_fold_multilinear_in_small_field,
     univariate_selectors,
 };
 use whir_p3::{
@@ -34,7 +34,7 @@ pub fn prove<F, NF, EF, M, SC, Challenger>(
     mut missing_mul_factor: Option<EF>,
 ) -> (Vec<EF>, Vec<EvaluationsList<EF>>, EF)
 where
-    F: TwoAdicField,
+    F: TwoAdicField + PrimeField64,
     NF: ExtensionField<F>,
     EF: ExtensionField<NF> + ExtensionField<F> + TwoAdicField,
     M: Borrow<EvaluationsList<NF>>,
@@ -111,7 +111,7 @@ pub fn sc_round<F, NF, EF, SC, Challenger>(
     missing_mul_factor: &mut Option<EF>,
 ) -> Vec<EvaluationsList<EF>>
 where
-    F: TwoAdicField,
+    F: TwoAdicField + PrimeField64,
     NF: ExtensionField<F>,
     EF: ExtensionField<NF> + ExtensionField<F> + TwoAdicField,
     SC: SumcheckComputation<F, NF, EF> + SumcheckComputationPacked<F, EF>,
@@ -121,83 +121,164 @@ where
 
     let selectors = univariate_selectors::<F>(skips);
 
-    let mut p_evals = Vec::<(F, EF)>::new();
-    let start = if is_zerofier {
-        p_evals.extend((0..1 << skips).map(|i| (F::from_usize(i), EF::ZERO)));
-        1 << skips
-    } else {
-        0
-    };
-    for z in start..=comp_degree * ((1 << skips) - 1) {
-        let sum_z = if z == (1 << skips) - 1 {
-            if let Some(eq_factor) = eq_factor {
-                (*sum
-                    - (0..(1 << skips) - 1)
-                        .map(|i| p_evals[i].1 * selectors[i].evaluate(eq_factor[round]))
-                        .sum::<EF>())
-                    / selectors[(1 << skips) - 1].evaluate(eq_factor[round])
+    match (skips, comp_degree, is_zerofier) {
+        (1, 2, false) => {
+            //  Use {0, 1, 1/2} instead of {0, 1, 2} for classic sumcheck
+            // Instead of evaluating h(z) at z = 0, 1, 2, we evaluate at z = 0, 1, 1/2.
+            // This optimization exploits the symmetry of Lagrange interpolation:
+            //
+            // eq(1/2, 0) = 1/2 * 0 + (1 - 1/2) * 1 = 1/2
+            // eq(1/2, 1) = 1/2 * 1 + 0 * 1/2 = 1/2
+            //
+            // Since this is symmetric, we can compute h(1/2) more efficiently.
+            // In our case since we have a product of linear polynomials, we can compute h(1/2) as:
+            // h(z) = ∑_b p(z, b) * q(z, b) with p,q linear in z, then
+            //      h(1/2) = 1/4 * ∑_b (p(0, b) + p(1, b)) * (q(0, b) + q(1, b)).
+            //  This yields only one multiplication per hypercube element instead of three evaluations at {0,1,2}.
+
+            let folding_scalars_0: Vec<_> = selectors.iter().map(|s| s.evaluate(F::ZERO)).collect();
+            let folding_scalars_1: Vec<_> = selectors.iter().map(|s| s.evaluate(F::ONE)).collect();
+
+            let folded_0 = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars_0);
+            let folded_1 = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars_1);
+
+            // Calculate h(0)
+            let h0 =
+                compute_over_hypercube(&folded_0, computation, batching_scalars, eq_mle.as_ref());
+
+            // Derive h(1) from the constraint: h(1) = total_sum - h(0)
+            let h1 = *sum - h0;
+
+            // Sum f(0, b) + f(1, b) for all b
+            let summed_multilinears: Vec<_> = folded_0
+                .iter()
+                .zip(folded_1.iter())
+                .map(|(f0, f1)| add_multilinears(f0, f1))
+                .collect();
+
+            // Apply the optimization: h(1/2) = 1/4 * ∑_b (f(0, b) + f(1, b))
+            let mut h_half = compute_over_hypercube(
+                &summed_multilinears,
+                computation,
+                batching_scalars,
+                eq_mle.as_ref(),
+            );
+            // Multiply by 1/4 using two-adic division for clarity/consistency
+            h_half *= EF::from(F::ONE.div_2exp_u64(2));
+
+            // Instead of sending h(0), h(1), h(1/2) and interpolating, we compute
+            // the quadratic coefficients [a0, a1, a2] directly from the known values.
+            //
+            // Given the quadratic polynomial p(z) = a0 + a1*z + a2*z**2, we know:
+            //   p(0) = h0      (evaluated at z = 0)
+            //   p(1) = h1      (evaluated at z = 1)
+            //   p(1/2) = h_half (evaluated at z = 1/2)
+            //
+            // Solving the system of equations yields:
+            //   a0 = h0
+            //   a2 = 2*(h0 + h1 - 2*h_half)
+            //   a1 = h1 - a0 - a2
+
+            let a0 = h0;
+            let a2 = (h0 + h1 - h_half.double()).double();
+            let a1 = h1 - a0 - a2;
+
+            fs_prover.add_extension_scalars(&[a0, a1, a2]);
+            let challenge = fs_prover.sample();
+            challenges.push(challenge);
+
+            // Use Horner's method for efficient polynomial evaluation: (a2*x + a1)*x + a0
+            let p_at_challenge = (a2 * challenge + a1) * challenge + a0;
+            *sum = p_at_challenge;
+
+            *n_vars -= skips;
+            let pow_bits = grinding.pow_bits::<EF>(comp_degree);
+            fs_prover.pow_grinding(pow_bits);
+
+            let folding_scalars: Vec<_> = selectors.iter().map(|s| s.evaluate(challenge)).collect();
+            batch_fold_multilinear_in_large_field(multilinears, &folding_scalars)
+        }
+        _ => {
+            // Original logic for other cases
+            let mut p_evals = Vec::<(F, EF)>::new();
+            let start = if is_zerofier {
+                p_evals.extend((0..1 << skips).map(|i| (F::from_usize(i), EF::ZERO)));
+                1 << skips
             } else {
-                *sum - p_evals.iter().map(|(_, s)| *s).sum::<EF>()
+                0
+            };
+
+            for z in start..=comp_degree * ((1 << skips) - 1) {
+                let sum_z = if z == (1 << skips) - 1 {
+                    if let Some(eq_factor) = eq_factor {
+                        (*sum
+                            - (0..(1 << skips) - 1)
+                                .map(|i| p_evals[i].1 * selectors[i].evaluate(eq_factor[round]))
+                                .sum::<EF>())
+                            / selectors[(1 << skips) - 1].evaluate(eq_factor[round])
+                    } else {
+                        *sum - p_evals.iter().map(|(_, s)| *s).sum::<EF>()
+                    }
+                } else {
+                    let folded = batch_fold_multilinear_in_small_field(
+                        multilinears,
+                        &selectors
+                            .iter()
+                            .map(|s| s.evaluate(F::from_usize(z)))
+                            .collect::<Vec<_>>(),
+                    );
+                    let mut sum_z = compute_over_hypercube(
+                        &folded,
+                        computation,
+                        batching_scalars,
+                        eq_mle.as_ref(),
+                    );
+                    if let Some(missing_mul_factor) = missing_mul_factor {
+                        sum_z *= *missing_mul_factor;
+                    }
+                    sum_z
+                };
+                p_evals.push((F::from_usize(z), sum_z));
             }
-        } else {
+
+            let mut p = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
+            if let Some(eq_factor) = &eq_factor {
+                p *= &WhirDensePolynomial::lagrange_interpolation(
+                    &(0..1 << skips)
+                        .into_par_iter()
+                        .map(|i| (F::from_usize(i), selectors[i].evaluate(eq_factor[round])))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+            }
+
+            fs_prover.add_extension_scalars(&p.coeffs);
+            let challenge = fs_prover.sample();
+            challenges.push(challenge);
+            *sum = p.evaluate(challenge);
+
+            *n_vars -= skips;
+            let pow_bits = grinding.pow_bits::<EF>(
+                (comp_degree + usize::from(eq_factor.is_some())) * ((1 << skips) - 1),
+            );
+            fs_prover.pow_grinding(pow_bits);
+
             let folding_scalars = selectors
                 .iter()
-                .map(|s| s.evaluate(F::from_usize(z)))
+                .map(|s| s.evaluate(challenge))
                 .collect::<Vec<_>>();
-            // If skips == 1 (ie classic sumcheck round, we could avoid 1 multiplication below: TODO not urgent)
-            let folded = batch_fold_multilinear_in_small_field(multilinears, &folding_scalars);
-            let mut sum_z =
-                compute_over_hypercube(&folded, computation, batching_scalars, eq_mle.as_ref());
-            if let Some(missing_mul_factor) = missing_mul_factor {
-                sum_z *= *missing_mul_factor;
+            if let Some(eq_factor) = eq_factor {
+                *missing_mul_factor = Some(
+                    selectors
+                        .iter()
+                        .map(|s| s.evaluate(eq_factor[round]) * s.evaluate(challenge))
+                        .sum::<EF>()
+                        * missing_mul_factor.unwrap_or(EF::ONE),
+                );
             }
-
-            sum_z
-        };
-
-        p_evals.push((F::from_usize(z), sum_z));
+            batch_fold_multilinear_in_large_field(multilinears, &folding_scalars)
+        }
     }
-
-    let mut p = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
-
-    if let Some(eq_factor) = &eq_factor {
-        // https://eprint.iacr.org/2024/108.pdf Section 3.2
-        // We do not take advantage of this trick to send less data, but we could do so in the future (TODO)
-        p *= &WhirDensePolynomial::lagrange_interpolation(
-            &(0..1 << skips)
-                .into_par_iter()
-                .map(|i| (F::from_usize(i), selectors[i].evaluate(eq_factor[round])))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-    }
-
-    fs_prover.add_extension_scalars(&p.coeffs);
-
-    let challenge = fs_prover.sample();
-    challenges.push(challenge);
-    *sum = p.evaluate(challenge);
-    *n_vars -= skips;
-
-    let pow_bits = grinding
-        .pow_bits::<EF>((comp_degree + usize::from(eq_factor.is_some())) * ((1 << skips) - 1));
-    fs_prover.pow_grinding(pow_bits);
-
-    let folding_scalars = selectors
-        .iter()
-        .map(|s| s.evaluate(challenge))
-        .collect::<Vec<_>>();
-    if let Some(eq_factor) = eq_factor {
-        *missing_mul_factor = Some(
-            selectors
-                .iter()
-                .map(|s| s.evaluate(eq_factor[round]) * s.evaluate(challenge))
-                .sum::<EF>()
-                * missing_mul_factor.unwrap_or(EF::ONE),
-        );
-    }
-    // If skips == 1 (ie classic sumcheck round, we could avoid 1 multiplication below: TODO not urgent)
-    batch_fold_multilinear_in_large_field(multilinears, &folding_scalars)
 }
 
 fn compute_over_hypercube<F, NF, EF, SC>(

@@ -88,6 +88,16 @@ pub fn prove_poseidon2(
     n_preprocessed_columns: usize,
     display_logs: bool,
 ) -> Poseidon2Benchmark {
+    prove_poseidon2_with_seed(log_n_rows, settings, n_preprocessed_columns, display_logs, 0)
+}
+
+pub fn prove_poseidon2_with_seed(
+    log_n_rows: usize,
+    settings: AirSettings,
+    n_preprocessed_columns: usize,
+    display_logs: bool,
+    seed: u64,
+) -> Poseidon2Benchmark {
     if display_logs {
         let env_filter = EnvFilter::builder()
             .with_default_directive(LevelFilter::INFO.into())
@@ -101,7 +111,7 @@ pub fn prove_poseidon2(
 
     let n_rows = 1 << log_n_rows;
 
-    let mut rng = StdRng::seed_from_u64(0);
+    let mut rng = StdRng::seed_from_u64(seed);
     let constants =
         RoundConstants::<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>::from_rng(&mut rng);
 
