@@ -7,8 +7,7 @@ use whir_p3::parameters::{FoldingFactor, errors::SecurityAssumption};
 
 use crate::examples::poseidon2::prove_poseidon2;
 
-const SECURITY_BITS: usize = 32; // I changed this to lower the variation in grinding
-
+const SECURITY_BITS: usize = 128;
 fn main() {
     let (log_n_rows, log_inv_rate) = (18, 1);
     let benchmark = prove_poseidon2(
