@@ -157,7 +157,7 @@ where
                     // We multiply `p` by the polynomial 1 - r_j + (2 * r_j - 1) * X
                     // This polynomial interpolates the points (0, 1 - r_j) and (1, r_j)
                     let a = EF::ONE - eq_factor[round];
-                    let b = EF::from_usize(2) * eq_factor[round] - EF::ONE;
+                    let b = eq_factor[round].double() - EF::ONE;
                     let selector_poly = WhirDensePolynomial::from_coefficients_vec(vec![a, b]);
                     pol *= &selector_poly;
                 }

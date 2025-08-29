@@ -50,19 +50,6 @@ pub fn fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
                 .collect(),
         )
     }
-
-    EvaluationsList::new(
-        (0..new_size)
-            .into_par_iter()
-            .map(|i| {
-                scalars
-                    .iter()
-                    .enumerate()
-                    .map(|(j, s)| m.evals()[i + j * new_size] * *s)
-                    .sum()
-            })
-            .collect(),
-    )
 }
 
 // TODO packing for all the cases
