@@ -137,6 +137,7 @@ where
 
     for z in start..=comp_degree * ((1 << skips) - 1) {
         let sum_z = if z == (1 << skips) - 1 {
+            // This evaluation could be computed by the verifier.
             if let Some(eq_factor) = eq_factor {
                 if skips == 1 {
                     (*sum - p_evals[0].1 * (EF::ONE - eq_factor[round])) / eq_factor[round]
@@ -187,6 +188,15 @@ where
         p_evals.push((F::from_usize(z), sum_z));
     }
 
+    // The prover sends the evaluations of the polynomial p.
+    // We ommit the first `start` evaluations, which are zeroes because they are known to the verifier.
+    fs_prover.add_extension_scalars(
+        &p_evals[start..]
+            .iter()
+            .map(|(_, sum_z)| *sum_z)
+            .collect::<Vec<_>>(),
+    );
+
     let mut p = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
 
     if let Some(eq_factor) = &eq_factor {
@@ -209,8 +219,6 @@ where
             .unwrap();
         }
     }
-
-    fs_prover.add_extension_scalars(&p.coeffs);
 
     let challenge = fs_prover.sample();
     challenges.push(challenge);

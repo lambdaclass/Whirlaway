@@ -1,12 +1,12 @@
+use crate::SumcheckGrinding;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::{ExtensionField, TwoAdicField};
-use utils::Evaluation;
+use rayon::prelude::*;
+use utils::{Evaluation, univariate_selectors};
 use whir_p3::{
     fiat_shamir::{errors::ProofError, verifier::VerifierState},
     poly::dense::WhirDensePolynomial,
 };
-
-use crate::SumcheckGrinding;
 
 #[derive(Debug, Clone)]
 pub enum SumcheckError {
@@ -21,6 +21,8 @@ impl From<ProofError> for SumcheckError {
 }
 
 pub fn verify<F, EF, Challenger>(
+    eq_factor: Option<&[EF]>,
+    is_zerocheck: bool,
     verifier_state: &mut VerifierState<F, EF, Challenger>,
     n_vars: usize,
     degree: usize,
@@ -34,6 +36,9 @@ where
     let sumation_sets = vec![(0..2).map(|i| EF::from_usize(i)).collect::<Vec<_>>(); n_vars];
     let max_degree_per_vars = vec![degree; n_vars];
     verify_core(
+        eq_factor,
+        is_zerocheck,
+        1,
         verifier_state,
         &max_degree_per_vars,
         sumation_sets,
@@ -42,6 +47,8 @@ where
 }
 
 pub fn verify_with_univariate_skip<F, EF, Challenger>(
+    eq_factor: Option<&[EF]>,
+    is_zerocheck: bool,
     verifier_state: &mut VerifierState<F, EF, Challenger>,
     degree: usize,
     n_vars: usize,
@@ -60,7 +67,11 @@ where
         (0..2).map(EF::from_usize).collect::<Vec<_>>();
         n_vars - skips
     ]);
+
     verify_core(
+        eq_factor,
+        is_zerocheck,
+        skips,
         verifier_state,
         &max_degree_per_vars,
         sumation_sets,
@@ -69,6 +80,9 @@ where
 }
 
 fn verify_core<EF, F, Challenger>(
+    eq_factor: Option<&[EF]>,
+    is_zerocheck: bool,
+    mut skips: usize,
     verifier_state: &mut VerifierState<F, EF, Challenger>,
     max_degree_per_vars: &[usize],
     sumation_sets: Vec<Vec<EF>>,
@@ -83,12 +97,86 @@ where
     let mut challenges = Vec::new();
     let mut first_round = true;
     let (mut sum, mut target) = (EF::ZERO, EF::ZERO);
+    let mut round = 0;
+
+    let selectors = univariate_selectors::<F>(skips);
+    let mut pol: WhirDensePolynomial<EF> =
+        WhirDensePolynomial::from_coefficients_vec(vec![EF::ZERO]);
 
     for (&deg, sumation_set) in max_degree_per_vars.iter().zip(sumation_sets) {
-        let coeffs = verifier_state.next_extension_scalars_vec(deg + 1)?;
-        let pol = WhirDensePolynomial::from_coefficients_vec(coeffs);
+        // The evaluations needed to interpolate both the polynomial `p` and the missing factor of `eq`.
+        let mut p_evals = Vec::<(F, EF)>::new();
+        let mut missing_eq_evals = Vec::<(F, EF)>::new();
+
+        match (is_zerocheck, first_round) {
+            // First round of a zerocheck
+            (true, true) => {
+                // In the first round of the zerocheck, the first `2^skips` evaluations are zero.
+                p_evals.extend((0..(1 << skips)).map(|i| (F::from_usize(i), EF::ZERO)));
+                // We explain the number `deg + 2 - (1 << skips) - (1 << skips)`:
+                // `deg + 2` -> The degree of the polynomial `p * eq` is `deg`, but we need one more evalaution for `p` and onee more evaluation for `eq`.
+                // `- (1 << skips)` -> We substract the number of evaluations of `eq`.
+                // `- (1 << skips)` -> We skip the first `2^skips` evaluations that are zero.
+                p_evals.extend(
+                    ((1 << skips)..=(deg + 2 - (1 << skips)))
+                        .zip(
+                            verifier_state.next_extension_scalars_vec(
+                                deg + 2 - (1 << skips) - (1 << skips),
+                            )?,
+                        )
+                        .map(|(i, eval)| (F::from_usize(i), eval)),
+                );
+
+                pol = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
+
+                // The verifier comnputes the evaluations of the missing factor of `eq`.
+                if let Some(eq_factor) = &eq_factor {
+                    missing_eq_evals = (0..1 << skips)
+                        .into_par_iter()
+                        .map(|i| (F::from_usize(i), selectors[i].evaluate(eq_factor[round])))
+                        .collect::<Vec<_>>();
+                }
+
+                let missing_eq_poly =
+                    WhirDensePolynomial::lagrange_interpolation(&missing_eq_evals).unwrap();
+                pol *= &missing_eq_poly;
+            }
+            // Subsequent rounds of a zerocheck.
+            (true, false) => {
+                // In this case we don't skip the first `2^skips` evaluations because they aren't zero.
+                p_evals.extend(
+                    (0..(deg + 2 - (1 << skips)))
+                        .zip(verifier_state.next_extension_scalars_vec(deg + 2 - (1 << skips))?)
+                        .map(|(i, eval)| (F::from_usize(i), eval)),
+                );
+
+                pol = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
+
+                // The verifier comnputes the evaluations of the missing factor of `eq`.
+                if let Some(eq_factor) = &eq_factor {
+                    // We multiply `p` by the polynomial 1 - r_j + (2 * r_j - 1) * X
+                    // This polynomial interpolates the points (0, 1 - r_j) and (1, r_j)
+                    let a = EF::ONE - eq_factor[round];
+                    let b = eq_factor[round].double() - EF::ONE;
+                    let selector_poly = WhirDensePolynomial::from_coefficients_vec(vec![a, b]);
+                    pol *= &selector_poly;
+                }
+            }
+
+            (false, _) => {
+                // If it isn't a zerocheck, we don't have the factor `eq`. Then, `deg` is the degree of the polynomial `p`, so
+                // we need `deg + 1` evalautions to interpolate `p`.
+                p_evals.extend(
+                    (0..=deg)
+                        .zip(verifier_state.next_extension_scalars_vec(deg + 1)?)
+                        .map(|(i, eval)| (F::from_usize(i), eval)),
+                );
+                pol = WhirDensePolynomial::lagrange_interpolation(&p_evals).unwrap();
+            }
+        }
 
         let computed_sum = sumation_set.iter().map(|&s| pol.evaluate(s)).sum();
+
         if first_round {
             first_round = false;
             sum = computed_sum;
@@ -102,7 +190,10 @@ where
 
         target = pol.evaluate(challenge);
         challenges.push(challenge);
+        skips = 1;
+        round += 1;
     }
+
     Ok((
         sum,
         Evaluation {

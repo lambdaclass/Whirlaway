@@ -96,6 +96,8 @@ impl<
 
         let (sc_sum, outer_sumcheck_challenge) =
             sumcheck::verify_with_univariate_skip::<F, EF, Challenger>(
+                Some(&zerocheck_challenges),
+                true,
                 verifier_state,
                 self.constraint_degree + 1,
                 log_length,
@@ -104,6 +106,7 @@ impl<
                     security_bits: settings.security_bits,
                 },
             )?;
+
         if sc_sum != EF::ZERO {
             return Err(AirVerifError::SumMismatch);
         }
@@ -154,6 +157,7 @@ impl<
             .univariate_selectors
             .iter()
             .map(|s| s.evaluate(zerocheck_challenges[0]));
+
         if dot_product::<EF, _, _>(
             zerocheck_selector_evals.clone(),
             outer_selector_evals.iter().copied(),
@@ -205,6 +209,8 @@ impl<
         }
 
         let (batched_inner_sum, inner_sumcheck_challenge) = sumcheck::verify::<F, EF, Challenger>(
+            None,
+            false,
             verifier_state,
             log_length,
             2,

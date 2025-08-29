@@ -12,6 +12,7 @@ pub fn fold_multilinear_in_small_field<F: Field, EF: ExtensionField<F>>(
     scalars: &[F],
 ) -> EvaluationsList<EF> {
     assert!(scalars.len().is_power_of_two() && scalars.len() <= m.num_evals());
+    let new_size = m.num_evals() / scalars.len();
 
     // Case skips == 1:
     if scalars.len() == 2 {
