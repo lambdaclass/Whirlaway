@@ -1,9 +1,8 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use rand::{RngCore, rng};
 use std::time::Duration;
 use utils::{fold_multilinear_in_large_field, fold_multilinear_in_small_field};
 use whir_p3::poly::evals::EvaluationsList;
-
-use rand::{RngCore, rng};
 
 use p3_field::BasedVectorSpace;
 use p3_field::extension::BinomialExtensionField;
@@ -57,8 +56,11 @@ fn create_random_extension_field_element_scalars(log_n: usize) -> Vec<EF> {
         .collect()
 }
 
+// Represents the case: Round 0 (polynomials in base field), skips == 1, scalars in base field.
 fn bench_fold_multilinear_in_small_field_with_base_field_polys(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fold_multilinear_small_field_with_base_field_polys");
+    let mut group = c.benchmark_group(
+        "fold_multilinear_in_small_field with base field polys (Round 0) and skips = 1",
+    );
     group
         .sample_size(SAMPLE_SIZE)
         .measurement_time(Duration::from_secs(MEASUREMENT_TIME));
@@ -81,8 +83,11 @@ fn bench_fold_multilinear_in_small_field_with_base_field_polys(c: &mut Criterion
     group.finish();
 }
 
+// Represents the case: Rounds > 0 (polynomials in extension field), skips == 1, scalars in base field.
 fn bench_fold_multilinear_in_small_field_with_extension_field_polys(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fold_multilinear_small_field_with_extension_field_polys");
+    let mut group = c.benchmark_group(
+        "fold_multilinear_in_small_field with extension field polys (Rounds > 0) and skips = 1",
+    );
     group
         .sample_size(SAMPLE_SIZE)
         .measurement_time(Duration::from_secs(MEASUREMENT_TIME));
@@ -105,8 +110,11 @@ fn bench_fold_multilinear_in_small_field_with_extension_field_polys(c: &mut Crit
     group.finish();
 }
 
+// Represents the case: Round 0 (polynomials in base field), skips == 4, scalars in base field.
 fn bench_fold_multilinear_in_small_field_with_skip(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fold_multilinear_small_field_with_skip");
+    let mut group = c.benchmark_group(
+        "fold_multilinear_in_small_field with base field polys (Round 0) and skips = 4",
+    );
     group
         .sample_size(SAMPLE_SIZE)
         .measurement_time(Duration::from_secs(MEASUREMENT_TIME));
@@ -130,8 +138,11 @@ fn bench_fold_multilinear_in_small_field_with_skip(c: &mut Criterion) {
     group.finish();
 }
 
+// Represents the case: Round 0 (polynomials in base field), skips == 1, scalars in extension field.
 fn bench_fold_multilinear_in_large_field_with_base_field_polys(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fold_multilinear_large_field_with_base_field_scalars");
+    let mut group = c.benchmark_group(
+        "fold_multilinear_in_large_field with base field polys (Round 0) and skips = 1",
+    );
     group
         .sample_size(SAMPLE_SIZE)
         .measurement_time(Duration::from_secs(MEASUREMENT_TIME));
@@ -154,8 +165,11 @@ fn bench_fold_multilinear_in_large_field_with_base_field_polys(c: &mut Criterion
     group.finish();
 }
 
+// Represents the case: Rounds > 0 (polynomials in extension field), skips == 1, scalars in extension field.
 fn bench_fold_multilinear_in_large_field_with_extension_field_polys(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fold_multilinear_large_field_with_extension_field_scalars");
+    let mut group = c.benchmark_group(
+        "fold_multilinear_in_large_field with extension field polys (Rounds > 0) and skips = 1",
+    );
     group
         .sample_size(SAMPLE_SIZE)
         .measurement_time(Duration::from_secs(MEASUREMENT_TIME));
@@ -178,8 +192,11 @@ fn bench_fold_multilinear_in_large_field_with_extension_field_polys(c: &mut Crit
     group.finish();
 }
 
+// Represents the case: Round 0 (polynomials in base field), skips == 4, scalars in extension field.
 fn bench_fold_multilinear_in_large_field_with_skip(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fold_multilinear_large_field_with_skip");
+    let mut group = c.benchmark_group(
+        "fold_multilinear_in_large_field with base field polys (Round 0) and skips = 4",
+    );
     group
         .sample_size(SAMPLE_SIZE)
         .measurement_time(Duration::from_secs(MEASUREMENT_TIME));
